@@ -1,4 +1,4 @@
-﻿module meta;
+module meta;
 
 public import std.typetuple;
 public import std.traits;
@@ -6,6 +6,7 @@ public import std.traits;
 import my_demangle : Demangle;
 
 
+/// 
 template ToLongString(T)
 {
 	static if (Demangle!T.length >= 6 && Demangle!T[0..6] == "class ")
@@ -35,18 +36,7 @@ unittest
 }
 
 
-template LeastUnsignedType(size_t N)
-{
-	     static if (N <= ubyte .max) alias ubyte	LeastUnsignedType;
-	else static if (N <= ushort.max) alias ushort	LeastUnsignedType;
-	else static if (N <= uint  .max) alias uint		LeastUnsignedType;
-	else static if (N <= ulong .max) alias ulong	LeastUnsignedType;
-	else static assert(0, "tag-size is too big");
-	
-}
-
-
-
+/// 
 template staticCat(V...)
 {
 	static if (V.length == 0)
@@ -65,8 +55,7 @@ template staticCat(V...)
 static assert(staticCat!("A", "B", "C") == "ABC");
 
 
-
-// 整数範囲を指定し、テンプレート関数からタプルを生成する
+/// 
 template generateTuple(int Begin, int End, alias F) if (Begin <= End)
 {
 	static if (Begin == End)
@@ -79,6 +68,8 @@ template generateTuple(int Begin, int End, alias F) if (Begin <= End)
 	}
 }
 
+
+/// 
 template BinaryFun(string Code)
 {
 	template BinaryFun(alias A, alias B)
@@ -119,8 +110,6 @@ template staticReduce(alias F, alias Init, T...)
 		alias staticReduceEnv!(Init, F, T).Res staticReduce;
 	}
 }
-
-
 unittest
 {
 	static assert(staticReduce!(q{A==""?B:A~", "~B}, "", TypeTuple!("AAA", "BBB", "CCC")) == "AAA, BBB, CCC");

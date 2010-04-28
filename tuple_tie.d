@@ -1,4 +1,4 @@
-﻿module tuple_tie;
+module tuple_tie;
 
 public import std.typecons : Tuple;
 public import std.typecons : tuple;
@@ -6,11 +6,10 @@ public import std.typecons : tuple;
 import std.typetuple;
 import std.traits;
 
-//debug(PP_Runtime){
+version(unittest)
+{
 	import std.stdio : pp=writefln;
-//}else{
-//	void pp(T...)(T args){}
-//}
+}
 
 
 private:
@@ -19,31 +18,15 @@ private:
 	/// 
 	alias wildcard _;
 
-	// 部分特殊化テンプレートのマッチ判定用
-  version(none)
-  {
-	template Match(alias T, U)
+	// check partial specialization of templates
+	template isTie(U)
 	{
-		enum Match = __traits(compiles, {void f(X...)(T!X x){}; f(U.init);});
+		enum isTie = __traits(compiles, {void f(X...)(Tie!X x){}; f(U.init);});
 	}
-	template TieMatch(U)
+	template isTuple(U)
 	{
-		enum TieMatch = Match!(.Tie, U);
+		enum isTuple = __traits(compiles, {void f(X...)(Tuple!X x){}; f(U.init);});
 	}
-	template TupleMatch(U)
-	{
-		enum TupleMatch = Match!(.Tuple, U);
-	}
-  }else{
-	template TieMatch(U)
-	{
-		enum TieMatch = __traits(compiles, {void f(X...)(Tie!X x){}; f(U.init);});
-	}
-	template TupleMatch(U)
-	{
-		enum TupleMatch = __traits(compiles, {void f(X...)(Tuple!X x){}; f(U.init);});
-	}
-  }
 
 public:
 /// 
@@ -61,7 +44,7 @@ private:
 		{
 			alias T[I] Lhs;
 			alias U[0] Rhs;
-			
+
 			static if (is(Lhs == typeof(wildcard)))
 			{
 				//wildcard
@@ -77,13 +60,11 @@ private:
 				// capture
 				enum result = true && satisfy!(I+1, U[1..$]).result;
 			}
-		//	else static if (is(Lhs V : Tie!W, W...) && is(Rhs X : Tuple!Y, Y...))	//is式だと現状タプルを取れない&DMDが落ちる
-			else static if (TieMatch!Lhs && TupleMatch!Rhs)
+		//	else static if (is(Lhs V : Tie!W, W...) && is(Rhs X : Tuple!Y, Y...))		//BUG
+			else static if (isTie!Lhs && isTuple!Rhs)
 			{
 				//pattern
-				//isPartialTemplateでparamsが取れないため、NestしたTieのマッチ可能判定はopEquals内部でのCode生成時に行う
-				//TODO: ネストしたTieのシグネチャ判定をコンパイル時に行う
-		//		enum result = Lhs.isMatchingTuple!W && satisfy!(I+1, U[1..$]).result;
+		//		enum result = Lhs.isMatchingTuple!W && satisfy!(I+1, U[1..$]).result;	//BUG
 				enum result = true && satisfy!(I+1, U[1..$]).result;
 			}
 			else
@@ -105,7 +86,7 @@ private:
 	}
 
 	T refs;
-	
+
 	// U...を取り出すためにprivate関数にする
 	bool assignTuple(U...)(Tuple!U rhs)
 	{
@@ -115,7 +96,7 @@ private:
 			foreach( int I,t; refs ){
 				alias T[I] Lhs;
 				alias U[I] Rhs;
-				
+
 				static if (is(T[I] == typeof(wildcard)))					// wildcard
 				{
 					result = result && true;
@@ -166,10 +147,9 @@ public:
 		{
 			return assignTuple(rhs);
 		}
-		else static if (__traits(compiles, rhs.opTieMatch))
+		else static if (__traits(compiles, rhs.opTieMatch))	// user-type
 		{
-			//ユーザー定義型に対しては、opTieMatchによってマッチ処理を委譲する
-			//opTieMatchの実体化に失敗 == シグネチャ不一致検出
+			// if signatures mismatch, member function template instantiation should fail.
 			return rhs.opTieMatch(this);
 		}
 		else static if (is(U == Tie))			// copy fields
@@ -181,7 +161,7 @@ public:
 			static assert(0);
 		}
 	}
-	
+
 }
 
 /// 
@@ -279,7 +259,7 @@ unittest
 		{
 			assert(0);
 		}
-		
+
 		p = &n;
 		if (tie(&n, null) = tuple(10, p)){
 			assert(0);
