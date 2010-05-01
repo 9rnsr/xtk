@@ -47,12 +47,12 @@ private:
 
 			static if (is(Lhs == typeof(wildcard)))
 			{
-				//wildcard
+				// wildcard
 				enum result = true && satisfy!(I+1, U[1..$]).result;
 			}
 			else static if (is(Rhs : Lhs) || (is(Lhs==void*) && is(Rhs == class)))
 			{
-				//value
+				// value
 				enum result = true && satisfy!(I+1, U[1..$]).result;
 			}
 			else static if (is(Lhs == Rhs*))
@@ -60,11 +60,11 @@ private:
 				// capture
 				enum result = true && satisfy!(I+1, U[1..$]).result;
 			}
-		//	else static if (is(Lhs V : Tie!W, W...) && is(Rhs X : Tuple!Y, Y...))		//BUG
+		//	else static if (is(Lhs V : Tie!W, W...) && is(Rhs X : Tuple!Y, Y...))		// BUG
 			else static if (isTie!Lhs && isTuple!Rhs)
 			{
-				//pattern
-		//		enum result = Lhs.isMatchingTuple!W && satisfy!(I+1, U[1..$]).result;	//BUG
+				// pattern
+		//		enum result = Lhs.isMatchingTuple!W && satisfy!(I+1, U[1..$]).result;	// BUG
 				enum result = true && satisfy!(I+1, U[1..$]).result;
 			}
 			else
@@ -87,7 +87,6 @@ private:
 
 	T refs;
 
-	// U...を取り出すためにprivate関数にする
 	bool assignTuple(U...)(Tuple!U rhs)
 	{
 		static if (isMatchingTuple!U)
@@ -112,7 +111,7 @@ private:
 				}
 				else														// value
 				{
-					static if (is(T[I] == void*))	//null and class|pointer
+					static if (is(T[I] == void*))	// null and class|pointer
 					{
 						static assert(is(Rhs == class) || isPointer!(Rhs));
 						result = result && (cast(Rhs)refs[I] is rhs.field[I]);
@@ -177,7 +176,7 @@ Tie!T tie(T...)(T tup)
 		{
 			ret.refs[i] = tup[i];
 		}
-		else											//pattern
+		else											// pattern
 		{
 			ret.refs[i] = tup[i];
 		}
@@ -188,7 +187,7 @@ Tie!T tie(T...)(T tup)
 unittest
 {
 	pp("tuple_tie.unittest");
-	//capture test
+	// capture test
 	{	int n = 10;
 		double d = 3.14;
 		if (tie(&n, &d) = tuple(20, 1.4142))
@@ -250,7 +249,7 @@ unittest
 			assert(0);
 		}
 	}
-	//value-matching test(null)
+	// value-matching test(null)
 	{	int n = 10;
 		int* p = null;
 		if ( tie(&n, null) = tuple(10, p)){
@@ -283,7 +282,7 @@ unittest
 		}
 	}
 
-	//ネストしたtie
+	// nested tie
 	{	int n = 10;
 		double d = 3.14;
 		string s;
