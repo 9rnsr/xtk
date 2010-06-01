@@ -1,9 +1,9 @@
-module meta;
+module typecons.meta;
 
 public import std.typetuple;
 public import std.traits;
 
-import my_demangle : Demangle;
+import typecons.my_demangle : Demangle;
 
 
 /// 

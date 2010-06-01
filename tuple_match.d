@@ -1,4 +1,4 @@
-module tuple_tie;
+module typecons.tuple_match;
 
 public import std.typecons : Tuple;
 public import std.typecons : tuple;
@@ -14,14 +14,14 @@ version(unittest)
 
 private:
 	struct Placeholder{}
-	static Placeholder wildcard;
+	static Placeholder ignore;
 	/// 
-	alias wildcard _;
+	alias ignore _;
 
 	// check partial specialization of templates
-	template isTie(U)
+	template isMatch(U)
 	{
-		enum isTie = __traits(compiles, {void f(X...)(Tie!X x){}; f(U.init);});
+		enum isMatch = __traits(compiles, {void f(X...)(Match!X x){}; f(U.init);});
 	}
 	template isTuple(U)
 	{
@@ -30,7 +30,7 @@ private:
 
 public:
 /// 
-struct Tie(T...)
+struct Match(T...)
 {
 private:
 	template satisfy(int I, U...)
@@ -45,9 +45,9 @@ private:
 			alias T[I] Lhs;
 			alias U[0] Rhs;
 
-			static if (is(Lhs == typeof(wildcard)))
+			static if (is(Lhs == typeof(ignore)))
 			{
-				// wildcard
+				// ignore
 				enum result = true && satisfy!(I+1, U[1..$]).result;
 			}
 			else static if (is(Rhs : Lhs) || (is(Lhs==void*) && is(Rhs == class)))
@@ -60,8 +60,8 @@ private:
 				// capture
 				enum result = true && satisfy!(I+1, U[1..$]).result;
 			}
-		//	else static if (is(Lhs V : Tie!W, W...) && is(Rhs X : Tuple!Y, Y...))		// BUG
-			else static if (isTie!Lhs && isTuple!Rhs)
+		//	else static if (is(Lhs V : Match!W, W...) && is(Rhs X : Tuple!Y, Y...))		// BUG
+			else static if (isMatch!Lhs && isTuple!Rhs)
 			{
 				// pattern
 		//		enum result = Lhs.isMatchingTuple!W && satisfy!(I+1, U[1..$]).result;	// BUG
@@ -92,11 +92,12 @@ private:
 		static if (isMatchingTuple!U)
 		{
 			auto result = true;
-			foreach( int I,t; refs ){
+			foreach (I,t; refs)
+			{
 				alias T[I] Lhs;
 				alias U[I] Rhs;
 
-				static if (is(T[I] == typeof(wildcard)))					// wildcard
+				static if (is(T[I] == typeof(ignore)))						// ignore
 				{
 					result = result && true;
 				}
@@ -105,7 +106,7 @@ private:
 					*refs[I] = rhs.field[I];
 					result = result && true;
 				}
-				else static if (is(T[I] V == Tie!W, W...))					// pattern
+				else static if (is(T[I] V == Match!W, W...))				// pattern
 				{
 					result = result && t.opAssign(rhs.field[I]);
 				}
@@ -146,12 +147,12 @@ public:
 		{
 			return assignTuple(rhs);
 		}
-		else static if (__traits(compiles, rhs.opTieMatch))	// user-type
+		else static if (__traits(compiles, rhs.opMatch))	// user-type
 		{
 			// if signatures mismatch, member function template instantiation should fail.
-			return rhs.opTieMatch(this);
+			return rhs.opMatch(this);
 		}
-		else static if (is(U == Tie))			// copy fields
+		else static if (is(U == Match))			// copy fields
 		{
 			this.tupleof = rhs.tupleof;
 		}
@@ -164,13 +165,14 @@ public:
 }
 
 /// 
-Tie!T tie(T...)(T tup)
+Match!T pattern(T...)(T tup)
 {
-	Tie!T ret;
-	foreach( i,t; tup )
+	Match!T ret;
+	foreach (i,t; tup)
 	{
-		static if (is(typeof(t) == typeof(wildcard)))	// wildcard
+		static if (is(typeof(t) == typeof(ignore)))		// ignore
 		{
+			//do nothing
 		}
 		else static if (isPointer!(T[i]))				// capture
 		{
@@ -183,14 +185,14 @@ Tie!T tie(T...)(T tup)
 	}
 	return ret;
 }
-
 unittest
 {
-	pp("tuple_tie.unittest");
+	pp("unittest: tuple_match");
+	
 	// capture test
 	{	int n = 10;
 		double d = 3.14;
-		if (tie(&n, &d) = tuple(20, 1.4142))
+		if (pattern(&n, &d) = tuple(20, 1.4142))
 		{
 			assert(n == 20);
 			assert(d == 1.4142);
@@ -201,10 +203,10 @@ unittest
 		}
 	}
 
-	// wildcard test
+	// ignore test
 	{	int n = 10;
 		double d = 3.14;
-		if (tie(&n, _) = tuple(20, 1.4142))
+		if (pattern(&n, _) = tuple(20, 1.4142))
 		{
 			assert(n == 20);
 			assert(d == 3.14);
@@ -216,7 +218,7 @@ unittest
 	}
 	{	int n = 10;
 		double d = 3.14;
-		if (tie(_, &d) = tuple(20, 1.4142))
+		if (pattern(_, &d) = tuple(20, 1.4142))
 		{
 			assert(n == 10);
 			assert(d == 1.4142);
@@ -229,7 +231,7 @@ unittest
 
 	// value-matching test(basic type, tuple)
 	{	int n = 10;
-		if (tie(&n, 1.4142) = tuple(20, 1.4142))
+		if (pattern(&n, 1.4142) = tuple(20, 1.4142))
 		{
 			assert(n == 20);
 		}
@@ -239,8 +241,7 @@ unittest
 		}
 	}
 	{	int n = 10;
-		double d = 1.4142;
-		if (tie(&n, tuple(d, "str")) = tuple(20, tuple(1.4142, "str")))
+		if (pattern(&n, tuple(1.4142, "str")) = tuple(20, tuple(1.4142, "str")))
 		{
 			assert(n == 20);
 		}
@@ -252,7 +253,8 @@ unittest
 	// value-matching test(null)
 	{	int n = 10;
 		int* p = null;
-		if ( tie(&n, null) = tuple(10, p)){
+		if ( pattern(&n, null) = tuple(10, p))
+		{
 		}
 		else
 		{
@@ -260,14 +262,15 @@ unittest
 		}
 
 		p = &n;
-		if (tie(&n, null) = tuple(10, p)){
+		if (pattern(&n, null) = tuple(10, p))
+		{
 			assert(0);
 		}
 	}
 	{	int n = 10;
 		static class A{}
 		A a;
-		if (tie(&n, null) = tuple(10, a))
+		if (pattern(&n, null) = tuple(10, a))
 		{
 			assert(n == 10);
 		}
@@ -276,17 +279,17 @@ unittest
 			assert(0);
 		}
 		a = new A();
-		if (tie(&n, null) = tuple(10, a))
+		if (pattern(&n, null) = tuple(10, a))
 		{
 			assert(0);
 		}
 	}
 
-	// nested tie
+	// nested pattern
 	{	int n = 10;
 		double d = 3.14;
 		string s;
-		if (tie(&n, tie(&d, &s)) = tuple(20, tuple(1.4142, "str")))
+		if (pattern(&n, pattern(&d, &s)) = tuple(20, tuple(1.4142, "str")))
 		{
 			assert(n == 20);
 			assert(d == 1.4142);
@@ -298,7 +301,7 @@ unittest
 		}
 	}
 	{	double d = 3.14;
-		if (tie(20, tie(&d, "str")) = tuple(20, tuple(1.4142, "str")))
+		if (pattern(20, pattern(&d, "str")) = tuple(20, tuple(1.4142, "str")))
 		{
 			assert(d == 1.4142);
 		}
@@ -313,14 +316,15 @@ unittest
 		{
 			int m_n; double m_d;
 			this(int n, double d){ m_n=n, m_d=d; }
-			bool opTieMatch(U...)(ref Tie!U tie){
-				return tie = tuple(m_n, m_d);
+			bool opMatch(U...)(ref Match!U m)
+			{
+				return m = tuple(m_n, m_d);
 			}
 		}
 		auto c = new C(10, 3.14);
 		int n;
-		double d = 3.14;
-		if (tie(&n, d) = c){
+		if (pattern(&n, 3.14) = c)
+		{
 			assert(n == 10);
 		}
 		else
@@ -331,16 +335,14 @@ unittest
 
 	// defect signature mismatch
 	{	int n = 10;
-		double d = 3.14;
-		static assert(!__traits(compiles, tie(&n, d) = 10));
+		static assert(!__traits(compiles, pattern(&n, 3.14) = 10));
+	}
+	{	int n = 10;
+		static assert(!__traits(compiles, pattern(&n, 3.14) = tuple(20, tuple(1.4142, "str"))));
 	}
 	{	int n = 10;
 		double d = 3.14;
-		static assert(!__traits(compiles, tie(&n, d) = tuple(20, tuple(1.4142, "str"))));
-	}
-	{	int n = 10;
-		double d = 3.14;
-		static assert(!__traits(compiles, tie(&n, null) = tuple(20, 1.4142)));
+		static assert(!__traits(compiles, pattern(&n, null) = tuple(20, 1.4142)));
 	}
 	{	static class N
 		{
@@ -349,8 +351,90 @@ unittest
 		}
 		auto c = new N(10, 3.14);
 		int n;
-		double d = 3.14;
-		static assert(!__traits(compiles, tie(&n, d) = c));
+		static assert(!__traits(compiles, pattern(&n, 3.14) = c));
 	}
-	pp("-> test ok");
+	
+/+	// match-object cannot copy
+	static assert(!__traits(compiles, delegate()
+	{
+		int n;
+		auto m = pattern(&n, _);
+		m = tuple(10, 3.14);
+	}));+/
+}
+
+/**
+ *
+ */
+auto match(T, U...)(T x, U matches)
+in
+{
+	static assert(U.length % 2 == 0);
+}
+body
+{
+	foreach (I,m; matches)
+	{
+		static if (I%2 == 0)
+		{
+			static if (is(typeof(matches[I]) == typeof(_)))
+			{
+				return matches[I+1]();
+			}
+			else
+			{
+				if (matches[I] = x)
+				{
+					return matches[I+1]();
+				}
+			}
+		}
+	}
+	static if (!is(typeof(return) == void))
+	{
+		return typeof(return).init;
+	}
+}
+unittest
+{
+	pp("unittest: tuple_match ->match");
+
+	// statement version
+	int d;
+	match(tuple(1, 3.14),
+		pattern(&d, 3.14),		{ assert(d == 1); },
+		_,						{ assert(0); }
+	);
+	match(tuple(1, "hello"),
+		pattern(&d, "bad"),		{ assert(0); },
+		_,						{ /*otherwise*/; }
+	);
+	static assert(!__traits(compiles, ()
+	{
+		match(tuple(1, "hello"),
+			pattern(&d, 3.14),	{ pp("int(%s)", d); },
+			_,					{ pp("otherwise"); }
+		);
+	}));
+
+	// expression version
+	assert(
+		match(tuple(1, "hello"),
+			pattern(&d, "hello"),	{ return 1; },
+			pattern(&d, "bad"),		{ return 2; }
+		)
+		== 1);
+	assert(
+		match(tuple(1, "hello"),
+			pattern(&d, "bad1"),	{ return 1; },
+			pattern(&d, "bad2"),	{ return 2; },
+			_,						{ return 3; }
+		)
+		== 3);
+	assert(
+		match(tuple(1, "hello"),
+			pattern(&d, "bad1"),	{ return 1; },
+			pattern(&d, "bad2"),	{ return 2; }
+		)
+		== int.init);
 }

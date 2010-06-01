@@ -17,7 +17,7 @@
  *          http://www.boost.org/LICENSE_1_0.txt)
  */
 //module std.demangle;
-module my_demangle;
+module typecons.my_demangle;
 
 //debug=demangle;                // uncomment to turn on debugging printf's
 

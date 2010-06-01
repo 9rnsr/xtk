@@ -1,6 +1,6 @@
-module tag_union;
+module typecons.tag_union;
 
-public import tuple_tie;
+public import typecons.tuple_match;
 
 version(unittest)
 {
@@ -12,7 +12,7 @@ version(unittest)
 template TagUnion(T...)
 {
 private:
-	import meta;
+	import typecons.meta;
 	import std.conv : to;
 
 	/// BUG shuld be inner template, though dmd dead
@@ -131,7 +131,8 @@ private:
 		" }";
 
   // ctors
-	template MakeCtor(size_t N){
+	template MakeCtor(size_t N)
+	{
 		enum MakeCtor =
 			"this(ref "~TyconTag!N~"_T data){ data"~to!string(N)~" = data; }";
 	}
@@ -139,7 +140,8 @@ private:
 		staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeCtor));
 
   // tycons
-	template MakeTycon(size_t N){
+	template MakeTycon(size_t N)
+	{
 		enum MakeTycon =
 			`static auto `~TyconTag!N~`(U...)(U args){`															"\n"
 			`	static if (is(U == TypeTuple!(`
@@ -147,55 +149,56 @@ private:
 			`	{`																								"\n"
 			`		return new typeof(this)(`~TyconTag!N~`_T(Tag.`~TyconTag!N~`, args));`						"\n"
 			`	}`																								"\n"
-			`	else static if (Tie!U.isMatchingTuple!(`
+			`	else static if (Match!U.isMatchingTuple!(`
 						~staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N))~	`))`	"\n"
 			`	{`																								"\n"
-			`		return tie(Tag.`~TyconTag!N~`, args);`														"\n"
+			`		return pattern(Tag.`~TyconTag!N~`, args);`													"\n"
 			`	}`																								"\n"
 			`	else`																							"\n"
 			`	{`																								"\n"
-			`		static assert(0);`																			"\n"
+			`		static assert(0, "tycon: "~U.stringof);`													"\n"
 			`	}`																								"\n"
 			`}`;
 	}
 	enum MakeTycons =
 		staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeTycon));
 
-  // opTieMatch
-	template MakeTieMatchCase(size_t N){
-		enum MakeTieMatchCase =
+  // opMatch
+	template MakeMatchCase(size_t N)
+	{
+		enum MakeMatchCase =
 			`	case Tag.`~TyconTag!N~`:`														"\n"
-			`		static if (Tie!U.isMatchingTuple!(Tag, TyconSig!`~to!string(N)~`))`			"\n"
+			`		static if (Match!U.isMatchingTuple!(Tag, TyconSig!`~to!string(N)~`))`		"\n"
 			`		{`																			"\n"
-			`			return tie = tuple(data`~to!string(N)~`.tupleof);`						"\n"
+			`			return m = tuple(data`~to!string(N)~`.tupleof);`						"\n"
 			`		}`
 			`		else`																		"\n"
 			`		{`																			"\n"
 			`			return false;`															"\n"
 			`		}`;
 	}
-	template MakeTieMatchInstanceIf(size_t N)
+	template MakeMatchInstanceIf(size_t N)
 	{
-		enum MakeTieMatchInstanceIf =
-			`Tie!U.isMatchingTuple!(Tag, TyconSig!`~to!string(N)~`)`;
+		enum MakeMatchInstanceIf =
+			`Match!U.isMatchingTuple!(Tag, TyconSig!`~to!string(N)~`)`;
 	}
-	enum MakeTieMatch = 
-		`bool opTieMatch(U...)(ref Tie!U tie){`													"\n"
+	enum MakeMatch = 
+		`bool opMatch(U...)(ref Match!U m){`													"\n"
 		`	static if (!(`
-				~staticReduce!(q{A==""?""~B:A~" || "~B}, "", generateTuple!(0, TyconCnt, MakeTieMatchInstanceIf))~
+				~staticReduce!(q{A==""?""~B:A~" || "~B}, "", generateTuple!(0, TyconCnt, MakeMatchInstanceIf))~
 			`))`																				"\n"
 		`	{`																					"\n"
-		`		static assert(0);`																"\n"
+		`		static assert(0, "match");`														"\n"
 		`	}`																					"\n"
 		"	\n"
 		`	final switch( tag ){`																"\n"
-		~staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeTieMatchCase))~	"\n"
+		~staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeMatchCase))~	"\n"
 		`	}`																					"\n"
 		`}`;
 
   // export tycons out of class/struct
 	enum MakeTyconAlias =
-		`import meta;`																							"\n"
+		`import typecons.meta;`																					"\n"
 		`template MakeAlias(size_t N)`																			"\n"
 		`{`																										"\n"
 		`	enum MakeAlias =`																					"\n"
@@ -216,7 +219,7 @@ private:
 	mixin(MakeTyconTags);
 	mixin(MakeTyconTypes);
 	mixin(MakeTyconDatas);
-	mixin(MakeTieMatch);
+	mixin(MakeMatch);
 public:
 	mixin(MakeCtors);
 	mixin(MakeTycons);
@@ -257,7 +260,7 @@ version(unittest)
 }
 unittest
 {
-	pp("tag_union.unittest");
+	pp("unittest: tag_union");
 
 	auto l = new temp.Label();
 
@@ -274,7 +277,7 @@ unittest
 	assert(eseq.data2._0 is s);
 	assert(eseq.data2._1 is e);
 
-	// tie match
+	// match
 	{	Stm s_;
 		Exp e_;
 		// pattern match(OK)
@@ -324,7 +327,7 @@ unittest
 
 		// raw match
 		Exp.Tag t;
-		if (tie(&t, &s_, &e_) = eseq)
+		if (pattern(&t, &s_, &e_) = eseq)
 		{
 			assert(t == Exp.Tag.ESEQ);
 			assert(s is s_);
@@ -335,6 +338,23 @@ unittest
 			assert(0);
 		}
 	}
+}
 
-	pp("-> test ok");
+unittest
+{
+	pp("unittest: tag_union ->match");
+
+	auto x = CONST(1);
+	
+	int d;
+	temp.Label l;
+	
+	match(x,
+		CONST(&d),	{ assert(d == 1); },
+		_,			{ assert(0); }
+	);
+	match(x,
+		NAME(&l),	{ assert(0); },
+		_,			{ /*otherwise*/; }
+	);
 }
