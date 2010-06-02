@@ -1,4 +1,4 @@
-module typecons.tag_union;
+﻿module typecons.tag_union;
 
 public import typecons.tuple_match;
 
@@ -25,6 +25,11 @@ private:
 		else static if (Demangle!T.length >= 7 && Demangle!T[0..7] == "struct ")
 		{
 			enum ToLongString = Demangle!T[7..$];
+		}
+		else static if (is(T == enum))
+		{
+			// .mangleofがenum型に対して仕様通りの値を返さないため暫定対策
+			enum ToLongString = T.stringof;
 		}
 		else static if (Demangle!T.length >= 5 && Demangle!T[0..5] == "enum ")
 		{
@@ -145,7 +150,13 @@ private:
 		enum MakeTycon =
 			`static auto `~TyconTag!N~`(U...)(U args){`															"\n"
 			`	static if (is(U == TypeTuple!(`
-						~staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N))~	`)))`	"\n"
+						~staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N))~	`))`	"\n"
+
+				//TODO: 派生型の値が与えられたときに上手いこと判定してくれない
+
+//						`||is(U : TypeTuple!(`
+//						~staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N))~	`))`
+																											`)`	"\n"
 			`	{`																								"\n"
 			`		return new typeof(this)(`~TyconTag!N~`_T(Tag.`~TyconTag!N~`, args));`						"\n"
 			`	}`																								"\n"
@@ -156,7 +167,8 @@ private:
 			`	}`																								"\n"
 			`	else`																							"\n"
 			`	{`																								"\n"
-			`		static assert(0, "tycon: "~U.stringof);`													"\n"
+			`		static assert(0, "tycon: "~U.stringof~", TypeTuple!(`
+						~staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N))~	`)");`	"\n"
 			`	}`																								"\n"
 			`}`;
 	}
