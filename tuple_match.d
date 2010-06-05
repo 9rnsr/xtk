@@ -5,6 +5,7 @@ public import std.typecons : tuple;
 
 import std.typetuple;
 import std.traits;
+import typecons.meta;
 
 version(unittest)
 {
@@ -28,68 +29,61 @@ private:
 		enum isTuple = __traits(compiles, {void f(X...)(Tuple!X x){}; f(U.init);});
 	}
 
+	template Through(alias V){ enum Through = V; }
+
+	template canMatch(Ptn, Val)
+	{
+		static if (is(Ptn == typeof(ignore)))
+		{
+			// ignore
+			enum canMatch = true;
+		}
+		else static if (is(Val : Ptn) || (is(Ptn==void*) && is(Val==class)))
+		{
+			// value
+			enum canMatch = true;
+		}
+		else static if (is(Ptn == Val*))
+		{
+			// capture
+			enum canMatch = true;
+		}
+		else static if (isMatch!Ptn && isTuple!Val && (Ptn.field.length==Val.field.length))
+		{
+			// pattern & tuple
+			enum canMatch = allSatisfy!(Through,
+				staticZip!(.canMatch, Seq!(Ptn.field), Seq!(typeof(Val.field)))
+			);
+		}
+		else static if (isMatch!Ptn && __traits(compiles, Val.opMatch))
+		{
+			// pattern & user-type
+		  version(none){	// too eager that check signatures?
+			enum canMatch = __traits(compiles, typeof((Ptn m){
+				if( Val.opMatch(m) ){}
+			}));
+		  }else{
+			enum canMatch = true;
+		  }
+		}
+		else
+		{
+			enum canMatch = false;
+		}
+	}
+
 public:
 /// 
 struct Match(T...)
 {
 private:
-	template satisfy(int I, U...)
-	{
-		static assert(T.length == I + U.length);
-		static if (U.length == 0)
-		{
-			enum result = true;
-		}
-		else
-		{
-			alias T[I] Lhs;
-			alias U[0] Rhs;
-
-			static if (is(Lhs == typeof(ignore)))
-			{
-				// ignore
-				enum result = true && satisfy!(I+1, U[1..$]).result;
-			}
-			else static if (is(Rhs : Lhs) || (is(Lhs==void*) && is(Rhs == class)))
-			{
-				// value
-				enum result = true && satisfy!(I+1, U[1..$]).result;
-			}
-			else static if (is(Lhs == Rhs*))
-			{
-				// capture
-				enum result = true && satisfy!(I+1, U[1..$]).result;
-			}
-		//	else static if (is(Lhs V : Match!W, W...) && is(Rhs X : Tuple!Y, Y...))		// BUG
-			else static if (isMatch!Lhs && isTuple!Rhs)
-			{
-				// pattern
-		//		enum result = Lhs.isMatchingTuple!W && satisfy!(I+1, U[1..$]).result;	// BUG
-				enum result = true && satisfy!(I+1, U[1..$]).result;
-			}
-			else
-			{
-				enum result = false;
-			}
-		}
-	}
-	public template isMatchingTuple(U...)
-	{
-		static if (T.length == U.length)
-		{
-			enum isMatchingTuple = satisfy!(0, U).result;
-		}
-		else
-		{
-			enum isMatchingTuple = false;
-		}
-	}
-
+	alias T field;
+	
 	T refs;
 
 	bool assignTuple(U...)(Tuple!U rhs)
 	{
-		static if (isMatchingTuple!U)
+		static if (canMatch!(typeof(this), Tuple!U))
 		{
 			auto result = true;
 			foreach (I,t; refs)
@@ -412,8 +406,8 @@ unittest
 	static assert(!__traits(compiles, ()
 	{
 		match(tuple(1, "hello"),
-			pattern(&d, 3.14),	{ pp("int(%s)", d); },
-			_,					{ pp("otherwise"); }
+			pattern(&d, 3.14),	{ },
+			_,					{ }
 		);
 	}));
 

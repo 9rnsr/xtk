@@ -160,14 +160,14 @@ private:
 			`	{`																								"\n"
 			`		return new typeof(this)(`~TyconTag!N~`_T(Tag.`~TyconTag!N~`, args));`						"\n"
 			`	}`																								"\n"
-			`	else static if (Match!U.isMatchingTuple!(`
-						~staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N))~	`))`	"\n"
+			`	else static if (canMatch!(Match!U, Tuple!(`
+						~staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N))~	`)))`	"\n"
 			`	{`																								"\n"
 			`		return pattern(Tag.`~TyconTag!N~`, args);`													"\n"
 			`	}`																								"\n"
 			`	else`																							"\n"
 			`	{`																								"\n"
-			`		static assert(0, "tycon: "~U.stringof~", TypeTuple!(`
+			`		static assert(0, "tycon: "~typeof(args).stringof~", TypeTuple!(`
 						~staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N))~	`)");`	"\n"
 			`	}`																								"\n"
 			`}`;
@@ -180,7 +180,7 @@ private:
 	{
 		enum MakeMatchCase =
 			`	case Tag.`~TyconTag!N~`:`														"\n"
-			`		static if (Match!U.isMatchingTuple!(Tag, TyconSig!`~to!string(N)~`))`		"\n"
+			`		static if (canMatch!(Match!U, Tuple!(Tag, TyconSig!`~to!string(N)~`)))`		"\n"
 			`		{`																			"\n"
 			`			return m = tuple(data`~to!string(N)~`.tupleof);`						"\n"
 			`		}`
@@ -192,7 +192,7 @@ private:
 	template MakeMatchInstanceIf(size_t N)
 	{
 		enum MakeMatchInstanceIf =
-			`Match!U.isMatchingTuple!(Tag, TyconSig!`~to!string(N)~`)`;
+			`canMatch!(Match!U, Tuple!(Tag, TyconSig!`~to!string(N)~`))`;
 	}
 	enum MakeMatch = 
 		`bool opMatch(U...)(ref Match!U m){`													"\n"
@@ -289,9 +289,16 @@ unittest
 	assert(eseq.data2._0 is s);
 	assert(eseq.data2._1 is e);
 
+	Exp eseq2 = ESEQ(s, CONST(20));
+	assert(eseq2.tag == 2);
+	assert(eseq2.data2._0 is s);
+	assert(eseq2.data2._1.tag == 0);
+	assert(eseq2.data2._1.data0._0 == 20);
+
 	// match
 	{	Stm s_;
 		Exp e_;
+		int n;
 		// pattern match(OK)
 		if (ESEQ(&s_, &e_) = eseq)
 		{
@@ -303,6 +310,17 @@ unittest
 			assert(0);
 		}
 		s_ = null, e_ = null;
+
+		// nested pattern match(OK)
+		if (ESEQ(&s_, CONST(&n)) = eseq2)
+		{
+			assert(s is s_);
+			assert(n == 20);
+		}
+		else
+		{
+			assert(0);
+		}
 
 		// signature mismatch(tag-value, fields...)
 		static assert(!__traits(compiles, ESEQ(&s_, &e_) = tuple(7, s, e)));
@@ -318,7 +336,6 @@ unittest
 		}
 
 		// tag pattern match(NG)
-		int n;
 		if (CONST(&n) = eseq)
 		{
 			assert(0);
