@@ -1,4 +1,4 @@
-module typecons.meta;
+﻿module typecons.meta;
 
 public import std.typetuple;
 public import std.traits;
@@ -53,6 +53,67 @@ template staticCat(V...)
 	}
 }
 static assert(staticCat!("A", "B", "C") == "ABC");
+
+
+/// タプルをラップするための型
+struct Seq(T...){ alias T field; }
+
+
+private template SeqListHead(T...) if (T.length == 0)
+{
+	alias TypeTuple!() SeqListHead;
+}
+private template SeqListHead(T...) if (is(T[0] U : Seq!W, W...))
+{
+	static if (T[0].field.length == 0)
+	{
+		alias TypeTuple!() SeqListHead;
+	}
+	else
+	{
+		alias TypeTuple!(T[0].field[0], SeqListHead!(T[1..$])) SeqListHead;
+	}
+}
+private template SeqListTail(T...) if (T.length == 0)
+{
+	alias TypeTuple!() SeqListTail;
+}
+private template SeqListTail(T...) if (is(T[0] U : Seq!W, W...))
+{
+	static if (T[0].field.length == 0)
+	{
+		alias TypeTuple!() SeqListTail;
+	}
+	else
+	{
+		alias TypeTuple!(Seq!(T[0].field[1..$]), SeqListTail!(T[1..$])) SeqListTail;
+	}
+}
+///
+/// 複数タプルをSeqでラップした上でstaticZipに渡す
+template staticZip(alias F, T...)
+{
+	static if (SeqListHead!T.length == 0)
+	{
+		alias TypeTuple!() staticZip;
+	}
+	else
+	{
+		alias TypeTuple!(F!(SeqListHead!T), staticZip!(F, SeqListTail!T)) staticZip;
+	}
+}
+version(unittest)
+{
+	import std.typecons : Tuple;
+	template MakeTuple(T...)
+	{
+		alias Tuple!T MakeTuple;
+	}
+	static assert(is(
+		staticZip!(MakeTuple, Seq!(int, double), Seq!(string, char))
+			== TypeTuple!(Tuple!(int, string), Tuple!(double, char))
+	));
+}
 
 
 /// 
