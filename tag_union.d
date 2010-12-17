@@ -26,11 +26,6 @@ private:
 		{
 			enum ToLongString = Demangle!T[7..$];
 		}
-		else static if (is(T == enum))
-		{
-			// .mangleofがenum型に対して仕様通りの値を返さないため暫定対策
-			enum ToLongString = T.stringof;
-		}
 		else static if (Demangle!T.length >= 5 && Demangle!T[0..5] == "enum ")
 		{
 			enum ToLongString = Demangle!T[5..$];

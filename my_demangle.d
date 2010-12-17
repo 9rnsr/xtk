@@ -25,7 +25,7 @@ private import std.ctype;
 private import std.string;
 import std.conv;
 private import std.utf;
-import std.contracts;
+import std.exception;
 
 private import std.stdio;
 
