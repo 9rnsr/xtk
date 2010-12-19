@@ -3,31 +3,31 @@
 public import std.typetuple;
 public import std.traits;
 
-import typecons.my_demangle : Demangle;
+import typecons.my_demangle : demangleOf;
 
 
 /// 
 template ToLongString(T)
 {
-	static if (Demangle!T.length >= 6 && Demangle!T[0..6] == "class ")
+	static if (demangleOf!T.length >= 6 && demangleOf!T[0..6] == "class ")
 	{
-		enum ToLongString = Demangle!T[6..$];
+		enum ToLongString = demangleOf!T[6..$];
 	}
-	else static if (Demangle!T.length >= 7 && Demangle!T[0..7] == "struct ")
+	else static if (demangleOf!T.length >= 7 && demangleOf!T[0..7] == "struct ")
 	{
-		enum ToLongString = Demangle!T[7..$];
+		enum ToLongString = demangleOf!T[7..$];
 	}
-	else static if (Demangle!T.length >= 5 && Demangle!T[0..5] == "enum ")
+	else static if (demangleOf!T.length >= 5 && demangleOf!T[0..5] == "enum ")
 	{
-		enum ToLongString = Demangle!T[5..$];
+		enum ToLongString = demangleOf!T[5..$];
 	}
-	else static if (Demangle!T.length >= 8 && Demangle!T[0..8] == "typedef ")
+	else static if (demangleOf!T.length >= 8 && demangleOf!T[0..8] == "typedef ")
 	{
-		enum ToLongString = Demangle!T[8..$];
+		enum ToLongString = demangleOf!T[8..$];
 	}
 	else
 	{
-		enum ToLongString = Demangle!T;
+		enum ToLongString = demangleOf!T;
 	}
 }
 unittest
