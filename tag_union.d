@@ -95,10 +95,17 @@ private:
 		
 	}
 
+	template Join(string sep, Args...)
+	{
+		enum Join = staticReduce!("A==\"\" ? B : A~`"~sep~"`~B", "", Args);
+	}
+
   // tycon tags
 	enum MakeTyconTags = mixin(expand!q{
-		enum Tag:${ LeastUnsignedType!TyconCnt }{
-			${ staticReduce!(q{A==""?B~"=0":A~", "~B}, "", TyconTags) }
+		enum Tag:${ LeastUnsignedType!TyconCnt }
+		{
+			${ TyconTags[0] } = 0,
+			${ Join!(", ", TyconTags[1..$]) }
 		}
 	});
 
@@ -116,12 +123,12 @@ private:
 			static struct ${ TyconTag!N }_T
 			{
 				Tag tag;
-				${ staticReduce!(q{A==""?B:A~"; "~B}, "", generateTuple!(0, TyconSig!N.length, MakeTyconTypeField!N)) };
+				${ Join!("; ", generateTuple!(0, TyconSig!N.length, MakeTyconTypeField!N)) };
 			}
 		});
 	}
 	enum MakeTyconTypes =
-		staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeTyconType));
+		Join!("\n", generateTuple!(0, TyconCnt, MakeTyconType));
 
   // tycon datas
 	template MakeTyconData(size_t N)
@@ -134,7 +141,7 @@ private:
 		union
 		{
 			Tag tag;
-			${ staticReduce!(q{A==""?B:A~" "~B}, "", generateTuple!(0, TyconCnt, MakeTyconData)) }
+			${ Join!(" ", generateTuple!(0, TyconCnt, MakeTyconData)) }
 		}
 	});
 
@@ -146,7 +153,7 @@ private:
 		});
 	}
 	enum MakeCtors =
-		staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeCtor));
+		Join!("\n", generateTuple!(0, TyconCnt, MakeCtor));
 
   // tycons
 	template MakeTycon(size_t N)
@@ -154,31 +161,31 @@ private:
 		enum MakeTycon = mixin(expand!q{
 			static auto ${ TyconTag!N }(U...)(U args){
 				static if (is(U == TypeTuple!(
-						${ staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N)) }))
+						${ Join!(", ", staticMap!(ToLongString, TyconSig!N)) }))
 
 				//TODO: 派生型の値が与えられたときに上手いこと判定してくれない
 
 //						||is(U : TypeTuple!(
-//						${ staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N)) }))
-																											)
+//						${ Join!(", ", staticMap!(ToLongString, TyconSig!N)) }))
+																					)
 				{
 					return new typeof(this)(${ TyconTag!N }_T(Tag.${ TyconTag!N }, args));
 				}
 				else static if (canMatch!(Match!U, Tuple!(
-						${ staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N)) })))
+						${ Join!(", ", staticMap!(ToLongString, TyconSig!N)) })))
 				{
 					return pattern(Tag.${ TyconTag!N }, args);
 				}
 				else
 				{
 					static assert(0, "tycon: "~typeof(args).stringof~", TypeTuple!("~
-						`${ staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N)) })`);
+						`${ Join!(", ", staticMap!(ToLongString, TyconSig!N)) })`);
 				}
 			}
 		});
 	}
 	enum MakeTycons =
-		staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeTycon));
+		Join!("\n", generateTuple!(0, TyconCnt, MakeTycon));
 
   // opMatch
 	template MakeMatchCase(size_t N)
@@ -200,13 +207,13 @@ private:
 	enum MakeMatch = mixin(expand!q{
 		bool opMatch(U...)(ref Match!U m){
 			static if (!(
-				${ staticReduce!(q{A==""?""~B:A~" || "~B}, "", generateTuple!(0, TyconCnt, MakeMatchInstanceIf)) }
+				${ Join!(" || ", generateTuple!(0, TyconCnt, MakeMatchInstanceIf)) }
 			))
 			{
 				static assert(0, "match");
 			}
 			final switch( tag ){
-			${ staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeMatchCase)) }
+			${ Join!("\n", generateTuple!(0, TyconCnt, MakeMatchCase)) }
 			}
 		}
 	});
@@ -219,15 +226,15 @@ private:
 			enum MakeAlias =
 				"alias "
 					~ToLongString!(typeof(this))~"."~
-						TypeTuple!(${ staticReduce!(q{A=="" ? "\""~B : A~"\", \""~B}, "", TyconTags)~"\"" })[N]
+						TypeTuple!(${ `"`~Join!(`", "`, TyconTags)~`"` })[N]
 						~" "~
-						TypeTuple!(${ staticReduce!(q{A=="" ? "\""~B : A~"\", \""~B}, "", TyconTags)~"\"" })[N]
+						TypeTuple!(${ "\""~Join!("\", \"", TyconTags)~"\"" })[N]
 					~";";
 		}
 		template Tycons()
 		{
 			enum Tycons =
-				staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, ${to!string(TyconCnt)}, MakeAlias));
+				Join!("\n", generateTuple!(0, ${to!string(TyconCnt)}, MakeAlias));
 		}
 	});
 

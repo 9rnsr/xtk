@@ -116,7 +116,7 @@ version(unittest)
 }
 
 
-/// 
+/// === staticMap!(F, staticIota!(Begin, End))
 template generateTuple(int Begin, int End, alias F) if (Begin <= End)
 {
 	static if (Begin == End)
