@@ -14,6 +14,7 @@ template TagUnion(T...)
 private:
 	import typecons.meta;
 	import std.conv : to;
+	import std.metastrings;
 
 	/// BUG shuld be inner template, though dmd dead
 	template ToLongString(T)
@@ -95,10 +96,11 @@ private:
 	}
 
   // tycon tags
-	enum MakeTyconTags =
-		"enum Tag:"~(LeastUnsignedType!TyconCnt).stringof~"{ "
-			~staticReduce!(q{A==""?B~"=0":A~", "~B}, "", TyconTags)~" "
-		"}";
+	enum MakeTyconTags = mixin(expand!q{
+		enum Tag:${ LeastUnsignedType!TyconCnt }{
+			${ staticReduce!(q{A==""?B~"=0":A~", "~B}, "", TyconTags) }
+		}
+	});
 
   // tycon types
 	template MakeTyconTypeField(size_t N)
@@ -110,11 +112,13 @@ private:
 	}
 	template MakeTyconType(size_t N)
 	{
-		enum MakeTyconType =
-			"static struct "~TyconTag!N~"_T{ "
-				"Tag tag; "
-				~staticReduce!(q{A==""?B:A~"; "~B}, "", generateTuple!(0, TyconSig!N.length, MakeTyconTypeField!N))~"; "
-			"}";
+		enum MakeTyconType = mixin(expand!q{
+			static struct ${ TyconTag!N }_T
+			{
+				Tag tag;
+				${ staticReduce!(q{A==""?B:A~"; "~B}, "", generateTuple!(0, TyconSig!N.length, MakeTyconTypeField!N)) };
+			}
+		});
 	}
 	enum MakeTyconTypes =
 		staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeTyconType));
@@ -122,19 +126,24 @@ private:
   // tycon datas
 	template MakeTyconData(size_t N)
 	{
-		enum MakeTyconData = TyconTag!N~"_T data"~to!string(N)~";";
+		enum MakeTyconData = mixin(expand!q{
+			${ TyconTag!N }_T data$N;
+		});
 	}
-	enum MakeTyconDatas =
-		"union{ "~
-			"Tag tag; "
-			~staticReduce!(q{A==""?B:A~" "~B}, "", generateTuple!(0, TyconCnt, MakeTyconData))~
-		" }";
+	enum MakeTyconDatas = mixin(expand!q{
+		union
+		{
+			Tag tag;
+			${ staticReduce!(q{A==""?B:A~" "~B}, "", generateTuple!(0, TyconCnt, MakeTyconData)) }
+		}
+	});
 
   // ctors
 	template MakeCtor(size_t N)
 	{
-		enum MakeCtor =
-			"this(ref "~TyconTag!N~"_T data){ data"~to!string(N)~" = data; }";
+		enum MakeCtor = mixin(expand!q{
+			this(ref ${ TyconTag!N }_T data){ data$N = data; }
+		});
 	}
 	enum MakeCtors =
 		staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeCtor));
@@ -142,30 +151,31 @@ private:
   // tycons
 	template MakeTycon(size_t N)
 	{
-		enum MakeTycon =
-			`static auto `~TyconTag!N~`(U...)(U args){`															"\n"
-			`	static if (is(U == TypeTuple!(`
-						~staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N))~	`))`	"\n"
+		enum MakeTycon = mixin(expand!q{
+			static auto ${ TyconTag!N }(U...)(U args){
+				static if (is(U == TypeTuple!(
+						${ staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N)) }))
 
 				//TODO: 派生型の値が与えられたときに上手いこと判定してくれない
 
-//						`||is(U : TypeTuple!(`
-//						~staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N))~	`))`
-																											`)`	"\n"
-			`	{`																								"\n"
-			`		return new typeof(this)(`~TyconTag!N~`_T(Tag.`~TyconTag!N~`, args));`						"\n"
-			`	}`																								"\n"
-			`	else static if (canMatch!(Match!U, Tuple!(`
-						~staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N))~	`)))`	"\n"
-			`	{`																								"\n"
-			`		return pattern(Tag.`~TyconTag!N~`, args);`													"\n"
-			`	}`																								"\n"
-			`	else`																							"\n"
-			`	{`																								"\n"
-			`		static assert(0, "tycon: "~typeof(args).stringof~", TypeTuple!(`
-						~staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N))~	`)");`	"\n"
-			`	}`																								"\n"
-			`}`;
+//						||is(U : TypeTuple!(
+//						${ staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N)) }))
+																											)
+				{
+					return new typeof(this)(${ TyconTag!N }_T(Tag.${ TyconTag!N }, args));
+				}
+				else static if (canMatch!(Match!U, Tuple!(
+						${ staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N)) })))
+				{
+					return pattern(Tag.${ TyconTag!N }, args);
+				}
+				else
+				{
+					static assert(0, "tycon: "~typeof(args).stringof~", TypeTuple!("~
+						`${ staticReduce!(q{A==""?B:A~", "~B}, "", staticMap!(ToLongString, TyconSig!N)) })`);
+				}
+			}
+		});
 	}
 	enum MakeTycons =
 		staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeTycon));
@@ -173,54 +183,53 @@ private:
   // opMatch
 	template MakeMatchCase(size_t N)
 	{
-		enum MakeMatchCase =
-			`	case Tag.`~TyconTag!N~`:`														"\n"
-			`		static if (canMatch!(Match!U, Tuple!(Tag, TyconSig!`~to!string(N)~`)))`		"\n"
-			`		{`																			"\n"
-			`			return m = tuple(data`~to!string(N)~`.tupleof);`						"\n"
-			`		}`
-			`		else`																		"\n"
-			`		{`																			"\n"
-			`			return false;`															"\n"
-			`		}`;
+		enum MakeMatchCase = mixin(expand!q{
+			case Tag.${ TyconTag!N }:
+			  static if (canMatch!(Match!U, Tuple!(Tag, TyconSig!$N)))
+				return m = tuple(data$N.tupleof);
+			  else
+				return false;
+		});
 	}
 	template MakeMatchInstanceIf(size_t N)
 	{
-		enum MakeMatchInstanceIf =
-			`canMatch!(Match!U, Tuple!(Tag, TyconSig!`~to!string(N)~`))`;
+		enum MakeMatchInstanceIf = mixin(expand!q{
+			canMatch!(Match!U, Tuple!(Tag, TyconSig!$N))
+		});
 	}
-	enum MakeMatch = 
-		`bool opMatch(U...)(ref Match!U m){`													"\n"
-		`	static if (!(`
-				~staticReduce!(q{A==""?""~B:A~" || "~B}, "", generateTuple!(0, TyconCnt, MakeMatchInstanceIf))~
-			`))`																				"\n"
-		`	{`																					"\n"
-		`		static assert(0, "match");`														"\n"
-		`	}`																					"\n"
-		"	\n"
-		`	final switch( tag ){`																"\n"
-		~staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeMatchCase))~	"\n"
-		`	}`																					"\n"
-		`}`;
+	enum MakeMatch = mixin(expand!q{
+		bool opMatch(U...)(ref Match!U m){
+			static if (!(
+				${ staticReduce!(q{A==""?""~B:A~" || "~B}, "", generateTuple!(0, TyconCnt, MakeMatchInstanceIf)) }
+			))
+			{
+				static assert(0, "match");
+			}
+			final switch( tag ){
+			${ staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, TyconCnt, MakeMatchCase)) }
+			}
+		}
+	});
 
   // export tycons out of class/struct
-	enum MakeTyconAlias =
-		`import typecons.meta;`																					"\n"
-		`template MakeAlias(size_t N)`																			"\n"
-		`{`																										"\n"
-		`	enum MakeAlias =`																					"\n"
-		`		"alias "`																						"\n"
-		`			~ToLongString!(typeof(this))~"."~`															"\n"
-		`				TypeTuple!(`~staticReduce!(q{A==""?"\""~B:A~"\", \""~B}, "", TyconTags)~`")[N]`			"\n"
-		`				~" "~`																					"\n"
-		`				TypeTuple!(`~staticReduce!(q{A==""?"\""~B:A~"\", \""~B}, "", TyconTags)~`")[N]`			"\n"
-		`			~";";`																						"\n"
-		`}`																										"\n"
-		`template Tycons()`																						"\n"
-		`{`																										"\n"
-		`	enum Tycons =`																						"\n"
-		`		staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, `~to!string(TyconCnt)~`, MakeAlias));`	"\n"
-		`}`;
+	enum MakeTyconAlias = mixin(expand!q{
+		import typecons.meta;
+		template MakeAlias(size_t N)
+		{
+			enum MakeAlias =
+				"alias "
+					~ToLongString!(typeof(this))~"."~
+						TypeTuple!(${ staticReduce!(q{A=="" ? "\""~B : A~"\", \""~B}, "", TyconTags)~"\"" })[N]
+						~" "~
+						TypeTuple!(${ staticReduce!(q{A=="" ? "\""~B : A~"\", \""~B}, "", TyconTags)~"\"" })[N]
+					~";";
+		}
+		template Tycons()
+		{
+			enum Tycons =
+				staticReduce!(q{A==""?B:A~"\n"~B}, "", generateTuple!(0, ${to!string(TyconCnt)}, MakeAlias));
+		}
+	});
 
 private:
 	mixin(MakeTyconTags);
