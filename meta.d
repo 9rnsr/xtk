@@ -1,134 +1,77 @@
-﻿module typecons.meta;
+module typecons.meta;
 
-public import std.typetuple;
-public import std.traits;
+public import std.traits, std.typecons, std.typetuple;
 
-import typecons.my_demangle : demangleOf;
-
-
-/// 
-template ToLongString(T)
+template Identity(alias A)
 {
-	static if (demangleOf!T.length >= 6 && demangleOf!T[0..6] == "class ")
-	{
-		enum ToLongString = demangleOf!T[6..$];
-	}
-	else static if (demangleOf!T.length >= 7 && demangleOf!T[0..7] == "struct ")
-	{
-		enum ToLongString = demangleOf!T[7..$];
-	}
-	else static if (demangleOf!T.length >= 5 && demangleOf!T[0..5] == "enum ")
-	{
-		enum ToLongString = demangleOf!T[5..$];
-	}
-	else static if (demangleOf!T.length >= 8 && demangleOf!T[0..8] == "typedef ")
-	{
-		enum ToLongString = demangleOf!T[8..$];
-	}
-	else
-	{
-		enum ToLongString = demangleOf!T;
-	}
+	alias A Identity;
 }
-unittest
+template Identity(T)
 {
-	static assert(ToLongString!int == "int");
+	alias T Identity;
 }
 
-
-/// 
-template staticCat(V...)
+struct Pack(T...)
 {
-	static if (V.length == 0)
+	alias T field;
+//	alias Identity!(T.length) length;
+	enum size_t length = field.length;
+}
+
+// workaround @@@BUG4333@@@
+template staticLength(tuple...)
+{
+	enum size_t staticLength = tuple.length;
+}
+
+template Join(string sep, Args...)
+{
+	enum Join = staticReduce!("A==\"\" ? B : A~`"~sep~"`~B", "", Args);
+}
+
+template mixinAll(mixins...)
+{
+	static if (mixins.length == 1)
 	{
-		enum staticCat = "";
+		static if (is(typeof(mixins[0]) == string))
+		{
+			mixin(mixins[0]);
+		}
+		else
+		{
+			alias mixins[0] it;
+			mixin it;
+		}
 	}
-	else static if (isSomeString!(typeof(V[0])))
+	else static if (mixins.length >= 2)
 	{
-		enum staticCat = V[0] ~ staticCat!(V[1..$]);
-	}
-	else
-	{
-		static assert(0);
+		mixin mixinAll!(mixins[ 0 .. $/2]);
+		mixin mixinAll!(mixins[$/2 .. $ ]);
 	}
 }
-static assert(staticCat!("A", "B", "C") == "ABC");
 
-
-/// タプルをラップするための型
-struct Seq(T...){ alias T field; }
-
-
-private template SeqListHead(T...) if (T.length == 0)
+template staticZip(alias P, alias Q)
 {
-	alias TypeTuple!() SeqListHead;
-}
-private template SeqListHead(T...) if (is(T[0] U : Seq!W, W...))
-{
-	static if (T[0].field.length == 0)
-	{
-		alias TypeTuple!() SeqListHead;
-	}
-	else
-	{
-		alias TypeTuple!(T[0].field[0], SeqListHead!(T[1..$])) SeqListHead;
-	}
-}
-private template SeqListTail(T...) if (T.length == 0)
-{
-	alias TypeTuple!() SeqListTail;
-}
-private template SeqListTail(T...) if (is(T[0] U : Seq!W, W...))
-{
-	static if (T[0].field.length == 0)
-	{
-		alias TypeTuple!() SeqListTail;
-	}
-	else
-	{
-		alias TypeTuple!(Seq!(T[0].field[1..$]), SeqListTail!(T[1..$])) SeqListTail;
-	}
-}
-///
-/// 複数タプルをSeqでラップした上でstaticZipに渡す
-template staticZip(alias F, T...)
-{
-	static if (SeqListHead!T.length == 0)
-	{
+	static assert(P.length == Q.length);
+	static if (P.length == 0)
 		alias TypeTuple!() staticZip;
-	}
 	else
-	{
-		alias TypeTuple!(F!(SeqListHead!T), staticZip!(F, SeqListTail!T)) staticZip;
-	}
+		alias TypeTuple!(
+				Pack!(P.field[0], Q.field[0]),
+				staticZip!(Pack!(P.field[1..$]), Pack!(Q.field[1..$]))
+			  ) staticZip;
 }
-version(unittest)
+template staticZip(alias P, alias Q, alias R)
 {
-	import std.typecons : Tuple;
-	template MakeTuple(T...)
-	{
-		alias Tuple!T MakeTuple;
-	}
-	static assert(is(
-		staticZip!(MakeTuple, Seq!(int, double), Seq!(string, char))
-			== TypeTuple!(Tuple!(int, string), Tuple!(double, char))
-	));
-}
-
-
-/// === staticMap!(F, staticIota!(Begin, End))
-template generateTuple(int Begin, int End, alias F) if (Begin <= End)
-{
-	static if (Begin == End)
-	{
-		alias TypeTuple!() generateTuple;
-	}
+	static assert(P.length == Q.length && Q.length == R.length);
+	static if (P.length == 0)
+		alias TypeTuple!() staticZip;
 	else
-	{
-		alias TypeTuple!(F!(Begin), generateTuple!(Begin+1, End, F)) generateTuple;
-	}
+		alias TypeTuple!(
+				Pack!(P.field[0], Q.field[0], R.field[0]),
+				staticZip!(Pack!(P.field[1..$]), Pack!(Q.field[1..$]), Pack!(R.field[1..$]))
+			  ) staticZip;
 }
-
 
 /// 
 template BinaryFun(string Code)
@@ -175,3 +118,43 @@ unittest
 {
 	static assert(staticReduce!(q{A==""?B:A~", "~B}, "", TypeTuple!("AAA", "BBB", "CCC")) == "AAA, BBB, CCC");
 }
+
+template allSatisfy(alias F, T...)
+{
+    static if (T.length == 0)
+    {
+        enum bool allSatisfy = true;
+    }
+    else static if (T.length == 1)
+    {
+		static if (is(T[0] U == Pack!V, V...))
+			alias F!(T[0].field) allSatisfy;
+		else
+        	alias F!(T[0]) allSatisfy;
+    }
+    else
+    {
+		static if (is(T[0] U == Pack!V, V...))
+        	enum bool allSatisfy = F!(T[0].field) && allSatisfy!(F, T[1 .. $]);
+        else
+        	enum bool allSatisfy = F!(T[0]) && allSatisfy!(F, T[1 .. $]);
+    }
+}
+
+template isCovariantParameterWith(alias F, alias G)
+{
+	enum isCovariantParameterWith = 
+		allSatisfy!(isImplicitlyConvertible, staticZip!(F, G));
+}
+
+template isImplicitlyConvertible(From, To)
+{
+	enum bool isImplicitlyConvertible =
+		std.traits.isImplicitlyConvertible!(From, To);
+}
+template isImplicitlyConvertible(alias P) if (is(P Q == Pack!(T), T...))
+{
+	enum bool isImplicitlyConvertible = 
+		isImplicitlyConvertible!(P.field);
+}
+
