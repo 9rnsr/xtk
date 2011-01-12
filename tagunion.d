@@ -1,5 +1,6 @@
 module typecons.tagunion;
 
+public import typecons.match;
 version(unittest) import std.stdio;
 
 template TagUnion(Defines...)
@@ -93,10 +94,39 @@ private:
 				
 				public:
 					static auto opCall(Elem...)(Elem elem)
-						if (isCovariantParameterWith!(Pack!(Elem), Pack!(TyconSig!n)))
 					{
+//						static assert (isCovariantParameterWith!(Pack!(Elem), Pack!(TyconSig!n)), "no match");
 						auto payload = new Self();
-						payload.data$n.tupleof = TypeTuple!(Tag.${ TyconTag!n }, elem);
+						
+						alias TypeTuple!(Tag.${ TyconTag!n }, elem) values;
+						
+						foreach (i, _field; values)
+						{
+							alias typeof(payload.data$n.tupleof[i]) FieldType;
+							alias typeof(values[i]) ValueType;
+							
+							// support literal null and [] (need runtime check)
+							static if (is(FieldType == class) && is(ValueType == void*))
+							{
+								if (values[i] !is null) assert(0);
+								payload.data$n.tupleof[i] = null;
+							}
+							else static if (isArray!FieldType && is(ValueType == void*))
+							{
+								if (values[i] !is null) assert(0);
+								payload.data$n.tupleof[i] = null;
+							}
+							else static if (isArray!FieldType && is(ValueType == void[]))
+							{
+								if (values[i].length != 0) assert(0);
+								payload.data$n.tupleof[i] = [];
+							}
+							else
+							{
+								static assert(isImplicitlyConvertible!(ValueType, FieldType));
+								payload.data$n.tupleof[i] = values[i];
+							}
+						}
 						return payload;
 					}
 					static auto opSlice()
