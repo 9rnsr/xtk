@@ -188,6 +188,53 @@ private:
 		}
 	}
 
+  // toString
+	template GenerateToString()
+	{
+		import std.array, std.format, std.conv;
+		
+		template GenToString(size_t n)
+		{
+			enum GenToString = mixin(expand!q{
+				case Tag.${ TyconTag!n }:
+					foreach (i, Unused; data$n.tupleof[1..$])
+					{
+						static if (i > 0)
+							app.put(separator);
+						
+						// TODO: Change this once toString() works for shared objects.
+					//	static if (is(Unused == class) && is(Unused == shared))
+					//		formattedWrite(app, "%s", data$n.tupleof[i].stringof);
+					//	else
+							formattedWrite(app, "%s", data$n.tupleof[1+i]);
+					}
+					break;
+			});
+		}
+		
+		string toString()
+		{
+			enum header = typeof(this).stringof ~ ".";
+			enum separator = ", ";
+			
+			Appender!string app;
+			app.put(header);
+			app.put(to!string(tag));
+			app.put("(");
+			mixin(mixin(expand!q{
+				final switch (tag)
+				{
+				${ Join!("\n",
+						staticMap!(
+							GenToString,
+							staticIota!(staticLength!(TyconTagList)))) }
+				}
+			}));
+			app.put(")");
+			return app.data;
+		}
+	}
+
 private:
 	mixin GenerateTag!();
 	mixin mixinAll!(
@@ -225,6 +272,7 @@ public:
 	alias GenerateTycons!Self tycons;
 
 	mixin GenerateOpMatch!();
+	mixin GenerateToString!();
 }
 
 version(unittest)
@@ -240,6 +288,10 @@ version(unittest)
 				if (auto lbl = cast(Label)o)
 					return lbl.name == this.name;
 				return false;
+			}
+			string toString()
+			{
+				return "Label(" ~ name ~ ")";
 			}
 		}
 	}
@@ -258,7 +310,6 @@ version(unittest)
 debug(tagunion)
 unittest
 {
-	writefln("unittest @ %s:%s", __FILE__, __LINE__);
 	scope(success) writefln("unittest succeeded @ %s:%s", __FILE__, __LINE__);
 	
 	long n;
@@ -276,4 +327,7 @@ unittest
 	Exp e;
 	auto op = BinOp.ADD;
 	assert(BIN[BinOp.ADD, null, null] <<= BIN(op, e, e));
+	
+	assert(CONST(10).toString == "Exp.CONST(10)");
+	assert(NAME(label1).toString == "Exp.NAME(Label(name1))");
 }

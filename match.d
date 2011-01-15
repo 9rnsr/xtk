@@ -281,7 +281,6 @@ struct p
 debug(match)
 unittest
 {
-	writefln("unittest @ %s:%s", __FILE__, __LINE__);
 	scope(success) writefln("unittest succeeded @ %s:%s", __FILE__, __LINE__);
 	
 	int x, y;
@@ -389,7 +388,6 @@ body
 debug(match)
 unittest
 {
-	writefln("unittest @ %s:%s", __FILE__, __LINE__);
 	scope(success) writefln("unittest succeeded @ %s:%s", __FILE__, __LINE__);
 
 	// statement version
@@ -451,7 +449,6 @@ struct tie
 debug(match)
 unittest
 {
-	writefln("unittest @ %s:%s", __FILE__, __LINE__);
 	scope(success) writefln("unittest succeeded @ %s:%s", __FILE__, __LINE__);
 
 	int x, y;
