@@ -1,16 +1,74 @@
 ﻿module file.file;
 
-import win32.windows;
+//import win32.windows;
+import core.sys.windows.windows;
 import std.typecons;
 //import std.stdio;
 import std.string;
 
+import std.range;
 
 enum EOF = char.init;
 enum LF = '\n';
 
 
-struct FileSource
+template isSource(T)
+{
+	enum isSource = is(typeof({
+		void f(ref T source){
+			ubyte[] buf;
+			pull(source, buf);
+		}
+	}()));
+}
+
+/*
+	pull is operation of Source.
+	
+	fill buf elements that read from source.
+	Returns:
+		after read, source has elements that can read.
+	buf.length == 0
+		
+	if source has no elements that can read, return false;
+*/
+bool pull(Source, T)(ref Source s, ref T[] buf)
+{
+	static if (is(typeof(s.pull(buf))))
+	{
+		return s.pull(buf);
+	}
+	else static if (hasSlicing!Source && hasLength!Source)
+	{
+		// この実装で正しいのか？
+		// 「RangeのSliceを取る」のが、単に要素の配列？を返すのではなく
+		// 「また別のRangeを返す」ならこの実装だとだめな可能性がある
+		
+		auto len = min(buf.length, s.length)
+		buf[len] = s[0 .. len];
+		popFrontN(s, len);
+		buf = buf[0 .. len];
+		return !s.empty;
+	}
+	else static if (isInputRange!Source)
+	{
+		if (buf.length == 0)
+			return !s.empty;
+		else
+		{
+			auto len = 0;
+			foreach (e; s)
+			{
+				buf[len++] = e;
+				if (len == buf.length) break;
+			}
+			buf = buf[0 .. len];
+			return true;
+		}
+	}
+}
+
+struct File
 {
 private:
 	HANDLE hFile;
@@ -27,7 +85,10 @@ public:
 		hFile = CreateFileW(
 			std.utf.toUTF16z(fname), access, share, null, createMode, 0, null);
 	}
-	@disable this(this);
+	this(this)
+	{
+		// todo
+	}
 	
 	~this()
 	{
@@ -36,38 +97,22 @@ public:
 	//	writefln(, typeof(this).stringof ~ " dtor");
 	}
 	
-	void read(ref ubyte[] buf)
+	bool pull(ref ubyte[] buf)
 	{
+		// yet support only synchronous read
+		bool result;
+		
 		size_t len;
-		if (ReadFile(hFile, buf.ptr, buf.length, &len, null) == 0)
-			throw new Exception("read error");
+		if (ReadFile(hFile, buf.ptr, buf.length, &len, null))
+			result = (len != 0);
+		else
+			throw new Exception("pull error");	//?
 		
 		buf = buf[0 .. len];
+		return result;
 	}
 }
-
-template IsSource(T)
-{
-	enum isSource = is(typeof({
-		f(ref T source){
-			ubyte[] buf;
-			source.read(buf);
-		}));
-}
-
-static assert(isSource!FileSource);
-
-void pull(Source, T)(ref Source s, ref T[] buf)
-{
-	static if (isSource!Source)
-	{
-		s.pull(buf);
-	}
-	else static if (isInputRange!Source)
-	{
-		
-	}
-}
+static assert(isSource!File);
 
 /*
 	Input
@@ -94,7 +139,7 @@ void pull(Source, T)(ref Source s, ref T[] buf)
 	Typedはorphan byteをキャッシュするというStrategyもありか…
 	この場合Bufferedと分離できないからなあ、BufferedにTを指定できるようにする？
 */
-struct Typed(Input, T)
+/+struct Typed(Input, T)
 {
 	static assert(isSource || is(ElementType!Input == ubyte));
 	
@@ -107,7 +152,7 @@ struct Typed(Input, T)
 		if (raw_buf.length - len * T.sizeof > 0)
 			throw new Exception("orphan bytes");
 		buf = buf[0 .. len];
-}
+}+/
 
 
 /*
@@ -150,17 +195,28 @@ struct Typed(Input, T)
 	よってBuffered+Convertをひとつにするのが望ましい
 	→Bufferedという名前だとこの意図を十分に表現しきれないんだよなあ
 */
-struct Buffered(Source, size_t bufferSize=1024)
+
+auto buffered(Source)(Source s, size_t bufferSize=1024)
+{
+	return Buffered!Source(s, bufferSize);
+}
+
+/**
+	BufferedはSourceで、かつInputRangeのI/Fを持つ
+	
+	Bufferedは入力(Range/Source)をPartial Random Access Rangeにマップする
+*/
+struct Buffered(Source)
 {
 	/* implementation:
 		ring buffer
 	*/
 	static assert(isSource!Source/* || isInputRange!Source*/);
 	
-	Source src;
+	Source source;
 	ubyte[] buffer, buf;
 	
-	this(Source s)
+	this(Source s, size_t bufferSize)
 	{
 		source = s;
 		buffer.length = bufferSize;
@@ -182,7 +238,7 @@ struct Buffered(Source, size_t bufferSize=1024)
 		buf = buffer;
 		static if (isSource!Source)
 		{
-			source.read(buf);	// fetch buffer
+			pull(source, buf);	// fetch buffer
 		}
 		else static if (isInputRange!Source)
 		{
@@ -191,81 +247,85 @@ struct Buffered(Source, size_t bufferSize=1024)
 			foreach (c; source)
 			{
 				buf[len] = c;
-				if (len == bufferSize - 1) break;
+				if (len == buffer.length - 1) break;
 			}
 			buf = buf[0 .. len];
 		}
 	}
 }
 
-struct Lined(Source, Char=char, immutable(Char[]) Term="\r\n")
+version(Windows)
 {
-	alias immutable(Char)[] String;
+	enum ubyte[] NativeNewLine = [0x0d, 0x0a];
+}
+else
+{
+	static assert(0, "not yet supported");
+}
+
+template lined(String=string)
+{
+	auto lined(Source)(Source s, in ubyte[] delim=NativeNewLine)
+	{
+		return Lined!(Source, String)(s, delim);
+	}
+}
+
+struct Lined(Source, String)
+{
+//	alias immutable(ubyte)[] RawString;
+	//	pragma(msg, String, ": is(", typeof(String.init[0]), " == immutable) = ", UniqueLine);
+	enum UniqueLine = is(typeof(String.init[0]) == immutable);
 	
-	Source src;
+	Source source;
+	const(ubyte)[] delim;
 	
-	this(Source s)
+	this(Source s, in ubyte[] d)
 	{
 		source = s;
+		delim = d;
 	}
 	
-	@property String front()
+	@property bool empty() const
+	{
+		return false;
+	}
+	
+	@property String front() const
+	{
+		static if (UniqueLine)
+		{
+			// バッファの再利用なし
+			return null;
+		}
+		else
+		{
+			// バッファの再利用あり
+			return null;
+		}
+	}
+	
+	void popFront()
+	{
+	}
+}
+
+/+template UTF8Lined(Source, alias Term=NativeNewLine)
+{
+	alias Lined!(string, Source, Term) UTF8Lined;
+}+/
+
+
+
+unittest
+{
+//	foreach (line; File("data.txt") | Buffered | Lined!string)
+	foreach (line; lined!string(buffered(File("data.txt"))))
 	{
 		
 	}
 }
 
-
-
-struct FilePos
+void main()
 {
-	ulong line = 0;
-	ulong column = 0;
-	
-	this(ulong ln, ulong col){
-		line = ln;
-		column = col;
-	}
-	
-	string toString(){
-		return (cast(const(FilePos))this).toString();
-	}
-	string toString() const{
-		return format("[%s:%s]", line+1, column+1);
-	}
-}
-
-
-struct FilePos_TextFile_Source
-{
-private:
-	TextFile_Source src;
-	FilePos pos;
-
-public:
-	this(string fname){
-	//	writefln("FilePos_TextFile_Source ctor");
-		src = TextFile_Source(fname);
-	}
-	~this(){
-	//	writefln("FilePos_TextFile_Source dtor");
-	}
-	
-	Tuple!(FilePos, char) read(){
-		char ch;
-		auto cur_pos = pos;
-		
-		if( (ch = src.read()) != EOF ){
-			if( ch == LF ){
-				pos.line += 1;
-				pos.column = 0;
-			}else{
-				pos.column += 1;
-			}
-		}else{
-			pos.column += 1;
-		}
-		
-		return tuple(cur_pos, ch);
-	}
 }
