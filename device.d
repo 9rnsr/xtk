@@ -3,7 +3,7 @@
 	Source/Sinkの基本要素はubyteである
 */
 //module std.device;
-import std.algorithm, std.range, std.traits;
+import std.array, std.algorithm, std.range, std.traits;
 version(Windows)
 {
 	import core.sys.windows.windows;
@@ -19,13 +19,19 @@ void main(string[] args)
 		if (c != '\r') write(c);
 	}	// +/
 
-	foreach (line; lined!wstring(buffered(File(args[1]))))
-		writeln(line);
+//	foreach (line; lined!string(buffered(File(args[1]))))
+//		bufferedはubyteなので、char(UTF8)に暗黙変換できる
+
+//	foreach (line; lined!wstring(decorder!dchar(buffered(File(args[1])))))
+//		バイト列をC列のバイト表現とみなし、decorder!CでdcharのRangeに変換する
+
+//		writeln(line);
+//		writefln("%(%02X %)", cast(ubyte[])line);
 }
 
 
 /*
-	Check that S is source.
+	Check that S is source.	(exact)
 	Source supports empty and pull operation.
 */
 template isSource(S)
@@ -36,7 +42,8 @@ template isSource(S)
 			if (s.empty){}
 			ubyte[] buf;
 			size_t len = 0;
-			const(ubyte)[] data = .pull(s, len, buf);
+			//const(ubyte)[] data = .pull(s, len, buf);
+			const(ubyte)[] data = s.pull(len, buf);
 		}
 	}()));
 }
@@ -105,7 +112,8 @@ template isSeekable(S)
 */
 const(ubyte)[] pull(S)(ref S s, size_t len, ubyte[] buf=null)
 {
-	static if (is(typeof(s.pull(len, buf))))
+	static if ((is(S==class) || is(S==struct)) && is(typeof(s.pull(len, buf))))
+		// Reject pattern of (s is array && .pull(s, len, buf)).
 	{
 		return s.pull(len, buf);
 	}
@@ -123,11 +131,21 @@ const(ubyte)[] pull(S)(ref S s, size_t len, ubyte[] buf=null)
 		else
 			buf.length = len;
 		
-		buf = buf[0 .. len];
+		auto outbuf = buf[0 .. len];
 		
 		// rangeをSourceとして扱う場合はすべてputに任せる
-		put(buf, s);
-		return buf;
+		//writefln("S == %s, outbuf.length == %s, s.length == %s", S.stringof, outbuf.length, s.length);
+		
+	//	put(outbuf, s);
+		// outbufを埋め尽くすか、sが空になるまでputする
+		// std.range.putはsからすべて吐き出せない場合にbreakしてくれない
+		for (; !s.empty; s.popFront())
+		{
+			if (outbuf.empty) break;
+			put(outbuf, s.front);
+		}
+		
+		return buf[0 .. $-outbuf.length];
 	}
 	else
 	{
@@ -135,7 +153,6 @@ const(ubyte)[] pull(S)(ref S s, size_t len, ubyte[] buf=null)
 	}
 }
 
-/+
 /**
 	sourceの終端に達するか、もしくは正しくlenバイトのデータをpullする
 */
@@ -146,16 +163,30 @@ out(data)
 }
 body
 {
+	//debug(Decoder) writefln("pullExact len = %s", len);
+
+	if (buf.length > 0)
+		len = min(buf.length, len);
+	else
+		buf.length = len;	// allocation
+	
 	auto data = .pull(s, len, buf);
 	if (data.length < len)
 	{
-		auto req = len - data.length;
-		while (!s.empty)
+		auto rem = buf[data.length .. $];
+		while (!s.empty && rem.length > 0)
 		{
-			
+			data = .pull(s, rem.length, rem);
+			rem = rem[data.length .. $];
 		}
+		//data = buf[0 .. $ - rem.length];
+		//debug(Decoder) writefln("pullExact rem.length = %s, s.empty = %s", rem.length, s.empty);
+		if (rem.length > 0)
+			throw new /*Read*/Exception("not enough data in stream");	// from std.stream.readExact
 	}
-}+/
+	//return data;
+	return buf;
+}
 
 /**
 	引数bufのslicingと、返値の2方向で処理後の状態を返している
@@ -217,7 +248,7 @@ struct Seekable(R)
 		return view.empty;
 	}
 	
-  static if (isSource!R)
+//static if (isSource!R)	//Rangeなら少なくともInput可能＝pull可能
 	const(ubyte)[] pull(S)(size_t len, ubyte[] buf=null)
 	{
 		return .pull(view, len, buf);
@@ -321,6 +352,8 @@ public:
 	
 	const(ubyte)[] pull(size_t len, ubyte[] buf)
 	{
+		enum : uint { ERROR_HANDLE_EOF = 38 }	// todo
+
 		// yet support only synchronous read
 		
 		if (buf.length > 0)
@@ -333,7 +366,9 @@ public:
 		if (ReadFile(hFile, buf.ptr, len, &size, null))
 		{
 			buf = buf[0 .. size];
-			eof = (size == 0);
+			//eof = (size == 0);
+			eof = (size < len);		// valid on only synchronous read
+			//writefln("File pull, len = %s, size = %s, GetLastError == %s, ERROR_HANDLE_EOF = %s", len, size, GetLastError(), ERROR_HANDLE_EOF);
 		}
 		else
 		{
@@ -388,11 +423,15 @@ auto buffered(Source)(Source s, size_t bufferSize=1024)
 	
 	
 	別名ByChunk
+	
+	x	BufferedはRangeとして扱ったほうが効率がよいため、Souce I/Fは提供しない
+	o	Souce/InputRangeのどちらで扱ってもコストはほぼ同じはず
 */
 struct Buffered(Source)
 {
 	Source source;
-	ubyte[] buffer, view;
+	ubyte[] buffer;
+	ubyte[] view;	// Not yet popFront/pulled data view on buffer
 	
 	this(Source s, size_t bufferSize)
 	{
@@ -403,6 +442,7 @@ struct Buffered(Source)
 	
 	@property bool empty() const
 	{
+		//debug(Decoder) writefln("Buffered empty, view.length = %s, source.empty = %s", view.length, source.empty);
 		return view.length==0 && source.empty;
 	}
 	
@@ -449,7 +489,222 @@ private:
 	{
 		auto v = .pull(source, buffer.length, buffer);
 		view = buffer[0 .. v.length];
+		//debug(Decoder) writefln("Buffered fetch, source.empty = %s", source.empty);
 	}
+}
+
+
+auto decorder(Char=char, Input)(Input input)
+{
+	return Decoder!(Input, Char)(input);
+}
+
+/**
+	Source、またはubyteのRangeをChar型のバイト表現とみなし、
+	これをdecodeしたdcharのRangeを構成する
+*/
+struct Decoder(Input, Char=char)
+	if (isSource!Input ||
+		(isInputRange!Input && is(ElementType!Input : const(ubyte))))
+{
+
+private:
+	Input input;
+	bool eof;
+//	Char ch;
+	dchar ch;
+
+public:
+	this(Input i)
+	{
+	//	writefln("Decoder!(%s, %s) -> front : %s",
+	//		Input.stringof, Char.stringof,
+	//		typeof(front()).stringof);
+		input = i;
+		popFront();		// fetch front
+	}
+	
+	@property bool empty() const
+	{
+		return eof;
+	}
+	
+//	@property Char front()
+	@property dchar front()
+	{
+		return ch;
+	}
+	
+	void popFront()
+	in{
+		assert(!eof);
+	}
+	body
+	{
+		if (input.empty)
+			eof = true;
+		else
+		{
+			// Change range status to empty when reading fails
+			scope(failure) eof = true;
+			
+			void pullN(Char[] buf)
+			{
+			  static if (isSource!Input)
+			  {
+				.pullExact(	input,
+							Char.sizeof * buf.length,
+							(cast(ubyte*)buf.ptr)[0 .. Char.sizeof * buf.length]);
+			  }
+			  else
+			  {
+				auto bytebuf = (cast(char*)buf.ptr)[0 .. Char.sizeof * buf.length];
+				foreach (i; 0 .. bytebuf.length)	// todo staticIota?
+				{
+					if (input.empty)
+						throw new /*Read*/Exception("not enough data in stream");	// from std.stream.readExact
+					
+					bytebuf[i] = input.front;
+					input.popFront();
+				}
+			  }
+			}
+			
+			static if (is(Char == char))
+			{
+				char[6] buf;
+				pullN(buf[0..1]);
+				auto len = std.utf.stride(buf[0..1], 0);
+				if (len == 0xFF)
+			        throw new std.utf.UtfException("Not the start of the UTF-8 sequence");
+				pullN(buf[1..len]);
+				
+				size_t i = 0;
+				ch = std.utf.decode(buf, i);
+			}
+			static if (is(Char == wchar))
+			{
+				wchar[2] buf;
+				pullN(buf[0..1]);
+				if (buf[0] >= 0xD800 && buf[0] <= 0xDBFF)	// surrogate
+					pullN(buf[1..2]);
+				//writefln("Decode buf = %04X %04X", buf[0], buf[1]);
+				
+				size_t i = 0;
+				ch = std.utf.decode(buf, i);
+				//writefln("Decode ch = %08X, buf = %04X %04X", ch, buf[0], buf[1]);
+			}
+			static if (is(Char == dchar))
+			{
+			  	dchar[1] buf;
+				pullN(buf[0..1]);
+				
+				size_t i = 0;
+				ch = std.utf.decode(buf, i);
+			}
+		}
+	}
+}
+unittest
+{
+	 string strc = "test UTFxx\r\nあいうえお漢字\r\n"c;
+	wstring strw = "test UTFxx\r\nあいうえお漢字\r\n"w;
+	dstring strd = "test UTFxx\r\nあいうえお漢字\r\n"d;
+	
+	 string[] expectc = ["test UTFxx"c, "あいうえお漢字"c];
+	wstring[] expectw = ["test UTFxx"w, "あいうえお漢字"w];
+	dstring[] expectd = ["test UTFxx"d, "あいうえお漢字"d];
+	
+	void print(string msg, ubyte[] data)
+	{
+		writefln("%s", msg);
+		foreach (n ; 0 .. data.length/16 + (data.length%16>0 ? 1:0))
+		{
+			writefln("%(%02X %)", data[16*n .. min(16*(n+1), data.length)]);
+		}
+	}
+	print("UTF8",  cast(ubyte[])strc);
+	print("UTF16", cast(ubyte[])strw);
+	print("UTF32", cast(ubyte[])strd);
+	
+	void decode_encode(Str1, Str2, R)(R data, Str2[] expect)
+	{
+		writefln("%s -> lined!%s", Str1.stringof, Str2.stringof);
+		auto ln = 0;
+		alias Unqual!(typeof(Str1.init[0])) Char1;
+		foreach (line; lined!Str2(decorder!Char1(data)))
+		{
+			// worksaround for std.string.format doesn't support formatting array.
+			string msg()
+			{
+				writefln("\n\t[%s] = \t%(%02X %)\n\t\t%(%02X %)",
+					ln, cast(ubyte[])line, cast(ubyte[])expect[ln]);
+				return "^^^^";
+			}
+			
+			assert(expect[ln] == line, msg());
+			++ln;
+		}
+		assert(ln == expect.length);
+	}
+	
+	// ubyte[]をDecoderに食わせる
+	decode_encode!( string,  string)(cast(ubyte[])strc, expectc);
+	decode_encode!( string, wstring)(cast(ubyte[])strc, expectw);
+	decode_encode!( string, dstring)(cast(ubyte[])strc, expectd);
+	decode_encode!(wstring,  string)(cast(ubyte[])strw, expectc);
+	decode_encode!(wstring, wstring)(cast(ubyte[])strw, expectw);
+	decode_encode!(wstring, dstring)(cast(ubyte[])strw, expectd);
+	decode_encode!(dstring,  string)(cast(ubyte[])strd, expectc);
+	decode_encode!(dstring, wstring)(cast(ubyte[])strd, expectw);
+	decode_encode!(dstring, dstring)(cast(ubyte[])strd, expectd);
+	
+	// Range of ubyteをDecoderに食わせる
+	struct ByteRange
+	{
+		ubyte[] arr;
+		@property bool empty() const	{ return arr.length == 0; }
+		@property ubyte front()			{ return arr[0]; }
+		void popFront()					{ arr = arr[1 .. $]; }
+	}
+	decode_encode!( string,  string)(ByteRange(cast(ubyte[])strc), expectc);
+	decode_encode!( string, wstring)(ByteRange(cast(ubyte[])strc), expectw);
+	decode_encode!( string, dstring)(ByteRange(cast(ubyte[])strc), expectd);
+	decode_encode!(wstring,  string)(ByteRange(cast(ubyte[])strw), expectc);
+	decode_encode!(wstring, wstring)(ByteRange(cast(ubyte[])strw), expectw);
+	decode_encode!(wstring, dstring)(ByteRange(cast(ubyte[])strw), expectd);
+	decode_encode!(dstring,  string)(ByteRange(cast(ubyte[])strd), expectc);
+	decode_encode!(dstring, wstring)(ByteRange(cast(ubyte[])strd), expectw);
+	decode_encode!(dstring, dstring)(ByteRange(cast(ubyte[])strd), expectd);
+
+	// Source of ubyteをDecoderに食わせる
+	struct ByteSource
+	{
+		ubyte[] arr;
+		
+		@property bool empty() const	{ return arr.length==0; }
+		
+		const(ubyte)[] pull(size_t len, ubyte[] buf)
+		{
+			if (buf.length > 0)
+				len = min(len, buf.length);
+			else
+				buf.length = len;
+			len = min(len, arr.length);
+			buf[0 .. len] = arr[0 .. len];
+			arr = arr[len .. $];
+			return buf[0 .. len];
+		}
+	}
+	decode_encode!( string,  string)(ByteSource(cast(ubyte[])strc), expectc);
+	decode_encode!( string, wstring)(ByteSource(cast(ubyte[])strc), expectw);
+	decode_encode!( string, dstring)(ByteSource(cast(ubyte[])strc), expectd);
+	decode_encode!(wstring,  string)(ByteSource(cast(ubyte[])strw), expectc);
+	decode_encode!(wstring, wstring)(ByteSource(cast(ubyte[])strw), expectw);
+	decode_encode!(wstring, dstring)(ByteSource(cast(ubyte[])strw), expectd);
+	decode_encode!(dstring,  string)(ByteSource(cast(ubyte[])strd), expectc);
+	decode_encode!(dstring, wstring)(ByteSource(cast(ubyte[])strd), expectw);
+	decode_encode!(dstring, dstring)(ByteSource(cast(ubyte[])strd), expectd);
 }
 
 
@@ -467,9 +722,20 @@ else
 		lined!string(buffered(File("foo.txt")))
 		lined!(const(char))("foo\nbar\nbaz", "\n")
 */
-auto lined(String=string, Range, Delim=String)(Range r, in Delim delim=NativeNewLine)
+auto lined(String=string, R)(R r)
 {
-	return Lined!(Range, String)(r, delim);
+	//pragma(msg, "0: lined : String=", String, ", R=", R/*, ", Delim=", Delim*/);
+	return Lined!(R, String)(r, cast(dstring)NativeNewLine);
+}
+/// ditto
+auto lined(String=string, R, Delim)(R r, in Delim delim)
+	if (is(Unqual!(ElementType!R) == Unqual!(ElementType!Delim)))
+{
+	//pragma(msg, "1: lined : String=", String, ", R=", R, ", Delim=", Delim);
+  static if (is(typeof(delim) : const(dchar)[]))
+	return Lined!(R, String)(r, delim);
+  else
+	return Lined!(R, String)(r, array(delim));
 }
 
 /**
@@ -491,22 +757,23 @@ auto lined(String=string, Range, Delim=String)(Range r, in Delim delim=NativeNew
 	別名ByLine
 	
 */
-struct Lined(Range, String)
-//	if (is(typeof({ Unqial!(ElementType!String) x == ElementType!Range.init; }())))
-//	→Rangeの要素をmutableな配列にコピーできるか、stringはdecode/encodeが走るので上の条件ではうまく判定できない
+struct Lined(Range, String : Char[], Char)
+	if (is(typeof(
+	{
+		void dummy(ref Appender!(Unqual!Char[]) app, ref Range r)
+		{
+			app.put(r.front);
+		}
+	}())))	// →Rangeの要素をmutableな配列にコピーできるか
 {
-//	alias immutable(ubyte)[] RawString;
-	//	pragma(msg, String, ": is(", typeof(String.init[0]), " == immutable) = ", UniqueLine);
-//	enum UniqueLine = is(typeof(String.init[0]) == immutable);
-
 private:
 	Range input;
-	String delim;
+	const(Unqual!(ElementType!Range))[] delim;
 	Unqual!(typeof(String.init[0]))[] lineBuffer;
 	String line;
 
 public:
-	this(Range r, in String d)
+	this(Range r, in const(Unqual!(ElementType!Range))[] d)
 	{
 		input = r;
 		delim = d;
@@ -566,17 +833,26 @@ public:
 	{
 	}
 }
-void testParseLines(String)()
-{
-	String[] lines;
-	foreach (line; lined!String(cast(String)"head\nmiddle\nend", cast(String)"\n"))
-		lines ~= line;
-	assert(lines == [cast(String)"head", cast(String)"middle", cast(String)"end"]);
-}
 unittest
 {
-	testParseLines!string();
-	testParseLines!wstring();
-	testParseLines!dstring();
-
+	void testParseLines(Str1, Str2)()
+	{
+		Str1 data = cast(Str1)"head\nmiddle\nend";
+		Str2[] expects = ["head", "middle", "end"];
+		
+		Str2[] lines;
+		foreach (line; lined!Str2(data, "\n"))
+			lines ~= line;
+		assert(lines == expects);
+	}
+	
+	testParseLines!( string,  string)();
+	testParseLines!( string, wstring)();
+	testParseLines!( string, dstring)();
+	testParseLines!(wstring,  string)();
+	testParseLines!(wstring, wstring)();
+	testParseLines!(wstring, dstring)();
+	testParseLines!(dstring,  string)();
+	testParseLines!(dstring, wstring)();
+	testParseLines!(dstring, dstring)();
 }
