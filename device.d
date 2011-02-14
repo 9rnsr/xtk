@@ -10,23 +10,31 @@ version(Windows)
 }
 
 import std.stdio;
+import std.perf;
 void main(string[] args)
 {
-	if (args.length != 2) return;
+//	if (args.length == 2)
+//	{
 
-/+	foreach (char c; buffered(File(args[1])))
-	{
-		if (c != '\r') write(c);
-	}	// +/
+	/+	foreach (char c; buffered(File(args[1])))
+		{
+			if (c != '\r') write(c);
+		}	// +/
+		
+		auto pc = new PerformanceCounter;
+		pc.start;
 
-//	foreach (line; lined!string(buffered(File(args[1]))))
-//		bufferedはubyteなので、char(UTF8)に暗黙変換できる
-
-//	foreach (line; lined!wstring(decorder!dchar(buffered(File(args[1])))))
-//		バイト列をC列のバイト表現とみなし、decorder!CでdcharのRangeに変換する
-
-//		writeln(line);
-//		writefln("%(%02X %)", cast(ubyte[])line);
+		size_t nlines = 0;
+		//バイト列をchar列のバイト表現とみなし、decoder!dcharでcharのRangeに変換する
+		foreach (line; lined!string(decoder!char(buffered(File(__FILE__)))))
+		{
+			line.dup;
+			++nlines;
+		}
+		pc.stop;
+		
+		printf("%g line/sec\n", nlines / (1.e-6 * pc.microseconds));
+//	}
 }
 
 
@@ -42,7 +50,6 @@ template isSource(S)
 			if (s.empty){}
 			ubyte[] buf;
 			size_t len = 0;
-			//const(ubyte)[] data = .pull(s, len, buf);
 			const(ubyte)[] data = s.pull(len, buf);
 		}
 	}()));
@@ -94,17 +101,6 @@ template isSeekable(S)
 }
 
 
-/+/**
-	get empty status from source or sink.
-	this is free funcion version.
-*/
-@property bool empty(S)(in S s)
-	if (!isInputRange!S && (isSource!S || isSink!S))
-{
-    return s.empty;
-}+/
-
-
 /*
 	sからlenバイトを読み出し、bufへ格納する
 	→	1.callerから与えられたバッファを埋める
@@ -112,8 +108,7 @@ template isSeekable(S)
 */
 const(ubyte)[] pull(S)(ref S s, size_t len, ubyte[] buf=null)
 {
-	static if ((is(S==class) || is(S==struct)) && is(typeof(s.pull(len, buf))))
-		// Reject pattern of (s is array && .pull(s, len, buf)).
+	static if (hasMember!(S, "pull") && is(typeof(s.pull(len, buf))))
 	{
 		return s.pull(len, buf);
 	}
@@ -124,7 +119,7 @@ const(ubyte)[] pull(S)(ref S s, size_t len, ubyte[] buf=null)
 	else static if (isInputRange!S)
 	{
 		// todo バイト列とオブジェクト型の変換(serialization)はどうする？
-		static assert(is(ElementType!S : ubyte));
+		static assert(is(ElementType!S : const(ubyte)));
 		
 		if (buf.length > 0)
 			len = min(buf.length, len);
@@ -139,9 +134,8 @@ const(ubyte)[] pull(S)(ref S s, size_t len, ubyte[] buf=null)
 	//	put(outbuf, s);
 		// outbufを埋め尽くすか、sが空になるまでputする
 		// std.range.putはsからすべて吐き出せない場合にbreakしてくれない
-		for (; !s.empty; s.popFront())
+		for (; !s.empty && !outbuf.empty; s.popFront())
 		{
-			if (outbuf.empty) break;
 			put(outbuf, s.front);
 		}
 		
@@ -151,6 +145,26 @@ const(ubyte)[] pull(S)(ref S s, size_t len, ubyte[] buf=null)
 	{
 		static assert(0, S.stringof~" does not support pull operation");
 	}
+}
+unittest
+{
+	ubyte[] arr = [1,2,3];
+	ubyte[] src = arr;
+	const(ubyte)[] buf = src.pull(2);
+	assert(src == [3]);
+	assert(buf == [1,2]);
+	
+	struct ByteRange
+	{
+		ubyte[] arr;
+		@property bool empty() const{ return arr.length == 0; }
+		@property ref ubyte front()	{ return arr[0]; }
+		void popFront()				{ arr = arr[1 .. $]; }
+	}
+	auto r = ByteRange(arr);
+	buf = .pull(r, 2);
+	assert(array(r) == [3]);
+	assert(buf == [1, 2]);
 }
 
 /**
@@ -187,6 +201,9 @@ body
 	//return data;
 	return buf;
 }
+unittest
+{
+}
 
 /**
 	引数bufのslicingと、返値の2方向で処理後の状態を返している
@@ -213,14 +230,6 @@ bool push(S)(ref S s, ref const(ubyte)[] buf)
 		static assert(0, S.stringof~" does not support push operation");
 	}
 }
-
-/+/**
-*/
-void seek(S)(ref S s, long offset, SeekPos whence)
-{
-	s.seek(offset, whence);
-}+/
-
 
 /**
 	RがRandomAccessRangeでない場合、Cur + |offset|以外の操作がO(n)となる
@@ -494,7 +503,7 @@ private:
 }
 
 
-auto decorder(Char=char, Input)(Input input)
+auto decoder(Char=char, Input)(Input input)
 {
 	return Decoder!(Input, Char)(input);
 }
@@ -503,7 +512,7 @@ auto decorder(Char=char, Input)(Input input)
 	Source、またはubyteのRangeをChar型のバイト表現とみなし、
 	これをdecodeしたdcharのRangeを構成する
 */
-struct Decoder(Input, Char=char)
+struct Decoder(Input, Char)
 	if (isSource!Input ||
 		(isInputRange!Input && is(ElementType!Input : const(ubyte))))
 {
@@ -511,15 +520,11 @@ struct Decoder(Input, Char=char)
 private:
 	Input input;
 	bool eof;
-//	Char ch;
 	dchar ch;
 
 public:
 	this(Input i)
 	{
-	//	writefln("Decoder!(%s, %s) -> front : %s",
-	//		Input.stringof, Char.stringof,
-	//		typeof(front()).stringof);
 		input = i;
 		popFront();		// fetch front
 	}
@@ -529,7 +534,6 @@ public:
 		return eof;
 	}
 	
-//	@property Char front()
 	@property dchar front()
 	{
 		return ch;
@@ -611,11 +615,7 @@ unittest
 	wstring strw = "test UTFxx\r\nあいうえお漢字\r\n"w;
 	dstring strd = "test UTFxx\r\nあいうえお漢字\r\n"d;
 	
-	 string[] expectc = ["test UTFxx"c, "あいうえお漢字"c];
-	wstring[] expectw = ["test UTFxx"w, "あいうえお漢字"w];
-	dstring[] expectd = ["test UTFxx"d, "あいうえお漢字"d];
-	
-	void print(string msg, ubyte[] data)
+/+	void print(string msg, ubyte[] data)
 	{
 		writefln("%s", msg);
 		foreach (n ; 0 .. data.length/16 + (data.length%16>0 ? 1:0))
@@ -625,86 +625,15 @@ unittest
 	}
 	print("UTF8",  cast(ubyte[])strc);
 	print("UTF16", cast(ubyte[])strw);
-	print("UTF32", cast(ubyte[])strd);
+	print("UTF32", cast(ubyte[])strd);+/
 	
-	void decode_encode(Str1, Str2, R)(R data, Str2[] expect)
+	void decode_test(Char, R)(R data, dstring expect)
 	{
-		writefln("%s -> lined!%s", Str1.stringof, Str2.stringof);
-		auto ln = 0;
-		alias Unqual!(typeof(Str1.init[0])) Char1;
-		foreach (line; lined!Str2(decorder!Char1(data)))
-		{
-			// worksaround for std.string.format doesn't support formatting array.
-			string msg()
-			{
-				writefln("\n\t[%s] = \t%(%02X %)\n\t\t%(%02X %)",
-					ln, cast(ubyte[])line, cast(ubyte[])expect[ln]);
-				return "^^^^";
-			}
-			
-			assert(expect[ln] == line, msg());
-			++ln;
-		}
-		assert(ln == expect.length);
+		assert(equal(decoder!Char(data), expect));
 	}
-	
-	// ubyte[]をDecoderに食わせる
-	decode_encode!( string,  string)(cast(ubyte[])strc, expectc);
-	decode_encode!( string, wstring)(cast(ubyte[])strc, expectw);
-	decode_encode!( string, dstring)(cast(ubyte[])strc, expectd);
-	decode_encode!(wstring,  string)(cast(ubyte[])strw, expectc);
-	decode_encode!(wstring, wstring)(cast(ubyte[])strw, expectw);
-	decode_encode!(wstring, dstring)(cast(ubyte[])strw, expectd);
-	decode_encode!(dstring,  string)(cast(ubyte[])strd, expectc);
-	decode_encode!(dstring, wstring)(cast(ubyte[])strd, expectw);
-	decode_encode!(dstring, dstring)(cast(ubyte[])strd, expectd);
-	
-	// Range of ubyteをDecoderに食わせる
-	struct ByteRange
-	{
-		ubyte[] arr;
-		@property bool empty() const	{ return arr.length == 0; }
-		@property ubyte front()			{ return arr[0]; }
-		void popFront()					{ arr = arr[1 .. $]; }
-	}
-	decode_encode!( string,  string)(ByteRange(cast(ubyte[])strc), expectc);
-	decode_encode!( string, wstring)(ByteRange(cast(ubyte[])strc), expectw);
-	decode_encode!( string, dstring)(ByteRange(cast(ubyte[])strc), expectd);
-	decode_encode!(wstring,  string)(ByteRange(cast(ubyte[])strw), expectc);
-	decode_encode!(wstring, wstring)(ByteRange(cast(ubyte[])strw), expectw);
-	decode_encode!(wstring, dstring)(ByteRange(cast(ubyte[])strw), expectd);
-	decode_encode!(dstring,  string)(ByteRange(cast(ubyte[])strd), expectc);
-	decode_encode!(dstring, wstring)(ByteRange(cast(ubyte[])strd), expectw);
-	decode_encode!(dstring, dstring)(ByteRange(cast(ubyte[])strd), expectd);
-
-	// Source of ubyteをDecoderに食わせる
-	struct ByteSource
-	{
-		ubyte[] arr;
-		
-		@property bool empty() const	{ return arr.length==0; }
-		
-		const(ubyte)[] pull(size_t len, ubyte[] buf)
-		{
-			if (buf.length > 0)
-				len = min(len, buf.length);
-			else
-				buf.length = len;
-			len = min(len, arr.length);
-			buf[0 .. len] = arr[0 .. len];
-			arr = arr[len .. $];
-			return buf[0 .. len];
-		}
-	}
-	decode_encode!( string,  string)(ByteSource(cast(ubyte[])strc), expectc);
-	decode_encode!( string, wstring)(ByteSource(cast(ubyte[])strc), expectw);
-	decode_encode!( string, dstring)(ByteSource(cast(ubyte[])strc), expectd);
-	decode_encode!(wstring,  string)(ByteSource(cast(ubyte[])strw), expectc);
-	decode_encode!(wstring, wstring)(ByteSource(cast(ubyte[])strw), expectw);
-	decode_encode!(wstring, dstring)(ByteSource(cast(ubyte[])strw), expectd);
-	decode_encode!(dstring,  string)(ByteSource(cast(ubyte[])strd), expectc);
-	decode_encode!(dstring, wstring)(ByteSource(cast(ubyte[])strd), expectw);
-	decode_encode!(dstring, dstring)(ByteSource(cast(ubyte[])strd), expectd);
+	decode_test!( char)(cast(ubyte[])strc, strd);
+	decode_test!(wchar)(cast(ubyte[])strw, strd);
+	decode_test!(dchar)(cast(ubyte[])strd, strd);
 }
 
 
@@ -723,13 +652,14 @@ else
 		lined!(const(char))("foo\nbar\nbaz", "\n")
 */
 auto lined(String=string, R)(R r)
+	if (isSomeChar!(ElementType!R))
 {
 	//pragma(msg, "0: lined : String=", String, ", R=", R/*, ", Delim=", Delim*/);
 	return Lined!(R, String)(r, cast(dstring)NativeNewLine);
 }
 /// ditto
 auto lined(String=string, R, Delim)(R r, in Delim delim)
-	if (is(Unqual!(ElementType!R) == Unqual!(ElementType!Delim)))
+	if (isSomeChar!(ElementType!R) && is(Unqual!(ElementType!R) == Unqual!(ElementType!Delim)))
 {
 	//pragma(msg, "1: lined : String=", String, ", R=", R, ", Delim=", Delim);
   static if (is(typeof(delim) : const(dchar)[]))
@@ -739,7 +669,7 @@ auto lined(String=string, R, Delim)(R r, in Delim delim)
 }
 
 /**
-	Rangeを取り、行のRangeを返す
+	string Rangeを取り、String型の行Rangeを返す
 	
 	As Source
 		Tがmutableなとき
@@ -755,7 +685,6 @@ auto lined(String=string, R, Delim)(R r, in Delim delim)
 		x	書き換えによってオリジナルのSink(Fileなど)への書き込みが行われる
 	
 	別名ByLine
-	
 */
 struct Lined(Range, String : Char[], Char)
 	if (is(typeof(
@@ -801,7 +730,9 @@ public:
 		{
 			auto e = input.front;
 			input.popFront();
-		
+		//	size_t i = 0;
+		//	writefln("Lined.popFront, input.front(%s) = %0*X, stride = %s",
+		//		typeof(e).stringof, typeof(e).sizeof*2, e, std.utf.stride((&e)[0 .. 1], i));
 			app.put(e);
 			if (e == delim[dlen])
 			{
@@ -840,10 +771,18 @@ unittest
 		Str1 data = cast(Str1)"head\nmiddle\nend";
 		Str2[] expects = ["head", "middle", "end"];
 		
-		Str2[] lines;
-		foreach (line; lined!Str2(data, "\n"))
-			lines ~= line;
-		assert(lines == expects);
+		auto indexer = sequence!"n"();
+		foreach (e; zip(indexer, lined!Str2(data, "\n")))
+		{
+			auto ln = e[0], line = e[1];
+			
+			assert(line == expects[ln],
+				std.string.format(
+					"lined!%s(%s) failed : \n"
+					"[%s]\tline   = %s\n\texpect = %s",
+						Str2.stringof, Str1.stringof,
+						ln, line, expects[ln]));
+		}
 	}
 	
 	testParseLines!( string,  string)();
@@ -855,4 +794,96 @@ unittest
 	testParseLines!(dstring,  string)();
 	testParseLines!(dstring, wstring)();
 	testParseLines!(dstring, dstring)();
+}
+
+unittest
+{
+	// decoderとlinedの組み合わせ
+	
+	 string		encoded_c = "test UTFxx\r\nあいうえお漢字\r\n"c;
+	wstring		encoded_w = "test UTFxx\r\nあいうえお漢字\r\n"w;
+	dstring		encoded_d = "test UTFxx\r\nあいうえお漢字\r\n"d;
+	
+	 string[]	expects_c = ["test UTFxx"c, "あいうえお漢字"c];
+	wstring[]	expects_w = ["test UTFxx"w, "あいうえお漢字"w];
+	dstring[]	expects_d = ["test UTFxx"d, "あいうえお漢字"d];
+	
+	void decode_encode(Str1, Str2, R)(R data, Str2[] expect)
+	{
+		//writefln("%s -> lined!%s", Str1.stringof, Str2.stringof);
+		auto ln = 0;
+		alias Unqual!(typeof(Str1.init[0])) Char1;
+		foreach (line; lined!Str2(decoder!Char1(data)))
+		{
+			// worksaround for std.string.format doesn't support formatting array.
+			string msg()
+			{
+				writefln("\n\t[%s] = \tline   = %(%02X %)\n\t\texpect = %(%02X %)",
+					ln, cast(ubyte[])line, cast(ubyte[])expect[ln]);
+				return std.string.format("%s -> lined!%s fails", Str1.stringof, Str2.stringof);
+			}
+			
+			assert(expect[ln] == line, msg());
+			++ln;
+		}
+		assert(ln == expect.length);
+	}
+	
+	// ubyte[]をDecoderに食わせる
+	decode_encode!( string,  string)(cast(ubyte[])encoded_c, expects_c);
+	decode_encode!( string, wstring)(cast(ubyte[])encoded_c, expects_w);
+	decode_encode!( string, dstring)(cast(ubyte[])encoded_c, expects_d);
+	decode_encode!(wstring,  string)(cast(ubyte[])encoded_w, expects_c);
+	decode_encode!(wstring, wstring)(cast(ubyte[])encoded_w, expects_w);
+	decode_encode!(wstring, dstring)(cast(ubyte[])encoded_w, expects_d);
+	decode_encode!(dstring,  string)(cast(ubyte[])encoded_d, expects_c);
+	decode_encode!(dstring, wstring)(cast(ubyte[])encoded_d, expects_w);
+	decode_encode!(dstring, dstring)(cast(ubyte[])encoded_d, expects_d);
+	
+	// Range of ubyteをDecoderに食わせる
+	struct ByteRange
+	{
+		ubyte[] arr;
+		@property bool empty() const	{ return arr.length == 0; }
+		@property ubyte front()			{ return arr[0]; }
+		void popFront()					{ arr = arr[1 .. $]; }
+	}
+	decode_encode!( string,  string)(ByteRange(cast(ubyte[])encoded_c), expects_c);
+	decode_encode!( string, wstring)(ByteRange(cast(ubyte[])encoded_c), expects_w);
+	decode_encode!( string, dstring)(ByteRange(cast(ubyte[])encoded_c), expects_d);
+	decode_encode!(wstring,  string)(ByteRange(cast(ubyte[])encoded_w), expects_c);
+	decode_encode!(wstring, wstring)(ByteRange(cast(ubyte[])encoded_w), expects_w);
+	decode_encode!(wstring, dstring)(ByteRange(cast(ubyte[])encoded_w), expects_d);
+	decode_encode!(dstring,  string)(ByteRange(cast(ubyte[])encoded_d), expects_c);
+	decode_encode!(dstring, wstring)(ByteRange(cast(ubyte[])encoded_d), expects_w);
+	decode_encode!(dstring, dstring)(ByteRange(cast(ubyte[])encoded_d), expects_d);
+
+	// Source of ubyteをDecoderに食わせる
+	struct ByteSource
+	{
+		ubyte[] arr;
+		
+		@property bool empty() const	{ return arr.length==0; }
+		
+		const(ubyte)[] pull(size_t len, ubyte[] buf)
+		{
+			if (buf.length > 0)
+				len = min(len, buf.length);
+			else
+				buf.length = len;
+			len = min(len, arr.length);
+			buf[0 .. len] = arr[0 .. len];
+			arr = arr[len .. $];
+			return buf[0 .. len];
+		}
+	}
+	decode_encode!( string,  string)(ByteSource(cast(ubyte[])encoded_c), expects_c);
+	decode_encode!( string, wstring)(ByteSource(cast(ubyte[])encoded_c), expects_w);
+	decode_encode!( string, dstring)(ByteSource(cast(ubyte[])encoded_c), expects_d);
+	decode_encode!(wstring,  string)(ByteSource(cast(ubyte[])encoded_w), expects_c);
+	decode_encode!(wstring, wstring)(ByteSource(cast(ubyte[])encoded_w), expects_w);
+	decode_encode!(wstring, dstring)(ByteSource(cast(ubyte[])encoded_w), expects_d);
+	decode_encode!(dstring,  string)(ByteSource(cast(ubyte[])encoded_d), expects_c);
+	decode_encode!(dstring, wstring)(ByteSource(cast(ubyte[])encoded_d), expects_w);
+	decode_encode!(dstring, dstring)(ByteSource(cast(ubyte[])encoded_d), expects_d);
 }
