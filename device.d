@@ -9,12 +9,14 @@ version(Windows)
 	import core.sys.windows.windows;
 }
 
+//debug = Move;
+
 import std.stdio;
 import std.perf;
 void main(string[] args)
 {
-//	if (args.length == 2)
-//	{
+	if (args.length == 2)
+	{
 
 	/+	foreach (char c; buffered(File(args[1])))
 		{
@@ -23,18 +25,24 @@ void main(string[] args)
 		
 		auto pc = new PerformanceCounter;
 		pc.start;
-
+		
 		size_t nlines = 0;
-		//バイト列をchar列のバイト表現とみなし、decoder!dcharでcharのRangeに変換する
-		foreach (line; lined!string(decoder!char(buffered(File(__FILE__)))))
+	//	//バイト列をchar列のバイト表現とみなし、decoder!dcharでcharのRangeに変換する
+	//	foreach (line; lined!string(decoder!char(buffered(File(args[1])))))
+		
+		foreach (i; 0 .. 1000)
 		{
-			line.dup;
-			++nlines;
+			// ubyteの列をstringとみなしてLine分割する
+			foreach (line; lined!string(buffered(File(args[1]), 2048)))
+			{
+				line.dup, ++nlines;
+			}
+			//assert(0);
 		}
 		pc.stop;
 		
 		printf("%g line/sec\n", nlines / (1.e-6 * pc.microseconds));
-//	}
+	}
 }
 
 
@@ -336,21 +344,28 @@ public:
 			std.utf.toUTF16z(fname), access, share, null, createMode, 0, null);
 		pRefCounter = new size_t();
 		*pRefCounter = 1;
-		debug writefln("hFile=%08X, GetLastError()=%s", cast(uint)hFile, GetLastError());
+		debug(Move) writefln("ctor   this=%08s, hFile=%08s, cnt=%s",
+			&this, cast(uint)hFile, pRefCounter ? *pRefCounter : 0);
 	}
 	this(this)
 	{
-		debug writefln("cpctor hFile=%08X, pRefCounter=%s", cast(uint)hFile, *pRefCounter);
 		if (pRefCounter) ++(*pRefCounter);
+		debug(Move) writefln("cpctor this=%08s, hFile=%08s, cnt=%s",
+			&this, cast(uint)hFile, pRefCounter ? *pRefCounter : 0);
 	}
 	~this()
 	{
-		debug writefln("dtor hFile=%08X, pRefCounter=%s", cast(uint)hFile, pRefCounter);
-		if (pRefCounter && --(*pRefCounter) == 0)
+		debug(Move) writefln("dtor   this=%08s, hFile=%08s, cnt=%s",
+			&this, cast(uint)hFile, pRefCounter ? *pRefCounter : 0);
+		if (pRefCounter)
 		{
-			debug writefln("%s", typeof(this).stringof ~ " dtor");
-			delete pRefCounter;
-			CloseHandle(cast(HANDLE)hFile);
+			if (--(*pRefCounter) == 0)
+			{
+				debug(Move) writefln("%s", typeof(this).stringof ~ " dtor");
+				delete pRefCounter;
+				CloseHandle(cast(HANDLE)hFile);
+			}
+			pRefCounter = null;
 		}
 	}
 
@@ -414,9 +429,10 @@ static assert(isSource!File);
 //static assert(isDevice!File);
 
 
-auto buffered(Source)(Source s, size_t bufferSize=1024)
+auto buffered(Source)(Source s, size_t bufferSize=2048)
 {
-	return Buffered!Source(s, bufferSize);
+	debug(Move) ScopePrint!"buffered" sp = 0;
+	return Buffered!Source(move(s), bufferSize);
 }
 
 /**
@@ -444,7 +460,8 @@ struct Buffered(Source)
 	
 	this(Source s, size_t bufferSize)
 	{
-		source = s;
+		debug(Move) ScopePrint!"Buffered.this" sp = 0;
+		move(s, source);
 		buffer.length = bufferSize;
 		fetch();
 	}
@@ -505,7 +522,8 @@ private:
 
 auto decoder(Char=char, Input)(Input input)
 {
-	return Decoder!(Input, Char)(input);
+	debug(Move) ScopePrint!"decoder" sp = 0;
+	return Decoder!(Input, Char)(move(input));
 }
 
 /**
@@ -525,7 +543,8 @@ private:
 public:
 	this(Input i)
 	{
-		input = i;
+		debug(Move) ScopePrint!"Decoder.this" sp = 0;
+		move(i, input);
 		popFront();		// fetch front
 	}
 	
@@ -652,20 +671,23 @@ else
 		lined!(const(char))("foo\nbar\nbaz", "\n")
 */
 auto lined(String=string, R)(R r)
-	if (isSomeChar!(ElementType!R))
+//	if (isSomeChar!(ElementType!R))
 {
+	debug(Move) ScopePrint!"lined1" sp = 0;
+	debug(Move) writefln("&r = %08X", cast(uint)&r);
 	//pragma(msg, "0: lined : String=", String, ", R=", R/*, ", Delim=", Delim*/);
-	return Lined!(R, String)(r, cast(dstring)NativeNewLine);
+	return Lined!(R, String, dstring)(move(r), cast(dstring)NativeNewLine);
 }
 /// ditto
 auto lined(String=string, R, Delim)(R r, in Delim delim)
-	if (isSomeChar!(ElementType!R) && is(Unqual!(ElementType!R) == Unqual!(ElementType!Delim)))
+//	if (isSomeChar!(ElementType!R) && is(Unqual!(ElementType!R) == Unqual!(ElementType!Delim)))
 {
+	debug(Move) ScopePrint!"lined2" sp = 0;
 	//pragma(msg, "1: lined : String=", String, ", R=", R, ", Delim=", Delim);
-  static if (is(typeof(delim) : const(dchar)[]))
-	return Lined!(R, String)(r, delim);
-  else
-	return Lined!(R, String)(r, array(delim));
+//static if (is(typeof(delim) : const(dchar)[]))
+	return Lined!(R, String, Delim)(move(r), move(delim));
+//else
+//	return Lined!(R, String)(r, array(delim));
 }
 
 /**
@@ -686,7 +708,7 @@ auto lined(String=string, R, Delim)(R r, in Delim delim)
 	
 	別名ByLine
 */
-struct Lined(Range, String : Char[], Char)
+struct Lined(Range, String : Char[], Delim, Char)
 	if (is(typeof(
 	{
 		void dummy(ref Appender!(Unqual!Char[]) app, ref Range r)
@@ -697,15 +719,17 @@ struct Lined(Range, String : Char[], Char)
 {
 private:
 	Range input;
-	const(Unqual!(ElementType!Range))[] delim;
+	Delim delim;
 	Unqual!(typeof(String.init[0]))[] lineBuffer;
 	String line;
 
 public:
-	this(Range r, in const(Unqual!(ElementType!Range))[] d)
+	this(Range r, Delim d)
 	{
-		input = r;
-		delim = d;
+		debug(Move) ScopePrint!"Lined.this" sp = 0;
+		move(r, input);
+		move(d, delim);
+		debug(Move) writefln("Lined.this -> r.source = %08s, pRefCounter = %08s", &r.source, r.source.pRefCounter ? *r.source.pRefCounter : 0);
 		popFront();
 	}
 	
@@ -886,4 +910,66 @@ unittest
 	decode_encode!(dstring,  string)(ByteSource(cast(ubyte[])encoded_d), expects_c);
 	decode_encode!(dstring, wstring)(ByteSource(cast(ubyte[])encoded_d), expects_w);
 	decode_encode!(dstring, dstring)(ByteSource(cast(ubyte[])encoded_d), expects_d);
+}
+
+
+
+debug(Move)
+struct ScopePrint(string msg)
+{
+	this(int dummy)
+	{
+		writefln("Scope enter : %s", msg);
+	}
+	@disable this(this);
+	~this()
+	{
+		writefln("Scope exit  : %s", msg);
+	}
+}
+
+import std.exception : pointsTo;
+void move(T, int line=__LINE__)(ref T source, ref T target)
+{
+	debug(Move) pragma(msg, "move instantiate : line=", line);
+	debug(Move) writefln("move &source=%08X, &target=%08X", cast(uint)&source, cast(uint)&target);
+	
+    if (&source == &target) return;
+    assert(!pointsTo(source, source));
+    static if (is(T == struct))
+    {
+        // Most complicated case. Destroy whatever target had in it
+        // and bitblast source over it
+//      static if (is(typeof(target.__dtor()))) target.__dtor();
+		static if (hasElaborateDestructor!(typeof(source))) typeid(T).destroy(&target);
+        memcpy(&target, &source, T.sizeof);
+        // If the source defines a destructor or a postblit hook, we must obliterate the
+        // object in order to avoid double freeing and undue aliasing
+//      static if (is(typeof(source.__dtor())) || is(typeof(source.__postblit())))
+		static if (hasElaborateDestructor!(typeof(source)))
+        {
+			debug(Move) pragma(msg, "  hasElaborateDestructor!T");
+            static T empty;
+            debug(Move) writefln("%s source clear", T.stringof);
+            memcpy(&source, &empty, T.sizeof);
+        }
+    }
+    else
+    {
+        // Primitive data (including pointers and arrays) or class -
+        // assignment works great
+        target = source;
+        // static if (is(typeof(source = null)))
+        // {
+        //     // Nullify the source to help the garbage collector
+        //     source = null;
+        // }
+    }
+}
+/// Ditto
+T move(T)(ref T src)
+{
+    T result;
+    move(src, result);
+    return result;
 }
