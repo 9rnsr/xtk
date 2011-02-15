@@ -10,6 +10,7 @@ version(Windows)
 }
 
 //debug = Move;
+debug = CalcPerf;
 
 import std.stdio;
 import std.perf;
@@ -23,6 +24,9 @@ void main(string[] args)
 			if (c != '\r') write(c);
 		}	// +/
 		
+
+		//getPageSize();
+
 		auto pc = new PerformanceCounter;
 		pc.start;
 		
@@ -39,8 +43,12 @@ void main(string[] args)
 			foreach (line; lined!(const(char)[])(buffered(File(args[1]), 2048)))
 			{
 				line.dup, ++nlines;
+				debug(CalcPerf) {} else
+				{
+					writefln("%s", line);
+				}
 			}
-			//assert(0);
+			debug(CalcPerf) {} else assert(0);
 		}
 		pc.stop;
 		
@@ -58,15 +66,20 @@ template isSource(S)
 	enum isSource = is(typeof({
 		void dummy(ref S s)
 		{
-			if (s.empty){}
-			ubyte[] buf;
-			size_t len = 0;
-			const(ubyte)[] data = s.pull(len, buf);
+		//	if (s.empty){}
+		//	ubyte[] buf;
+		//	size_t len = 0;
+		//	const(ubyte)[] data = s.pull(len, buf);
+			
+			ubyte[] buf = s.available;
+			size_t n;
+			s.consume(n);
+			if (s.fetch()){}
 		}
 	}()));
 }
 
-/*
+/+/*
 	Check that S is sink.
 	Sink supports empty(?) and push operation.
 */
@@ -109,7 +122,7 @@ template isSeekable(S)
 			s.seek(0, SeekPos.Set);
 		}
 	}()));
-}
+}+/
 
 
 /*
@@ -242,7 +255,7 @@ bool push(S)(ref S s, ref const(ubyte)[] buf)
 	}
 }
 
-/**
+/+/**
 	RがRandomAccessRangeでない場合、Cur + |offset|以外の操作がO(n)となる
 	→isRandomAccessRange!R を要件とする (いろいろ考えたが、おそらくこれが妥当と思われる)
 	→最低限の用件としては「ForwardかつLengthとSlicingを持つ」となる
@@ -317,7 +330,7 @@ struct Seekable(R)
 				view = orig[$ .. $];
 		}
 	}
-}
+}+/
 
 
 /**
@@ -365,14 +378,53 @@ public:
 			if (--(*pRefCounter) == 0)
 			{
 				debug(Move) writefln("%s", typeof(this).stringof ~ " dtor");
-				delete pRefCounter;
+				//delete pRefCounter;	// trivial: delegate management to GC.
 				CloseHandle(cast(HANDLE)hFile);
 			}
-			pRefCounter = null;
+			//pRefCounter = null;		// trivial: do not need
 		}
 	}
 
-	@property bool empty() const
+/**
+	Request n number of elements.
+	Returns:
+		true:
+			available was filled with equal (0 <= len <= n) elements.
+			and allows next fetch.
+		false:
+			no element exists.
+*/
+
+//	bool fetch(), ubyte[] available, void consume(size_t n)	buffered source
+//	bool fetch(ref ubyte[] buf)								concrete source
+
+	bool fetch(ref ubyte[] buf)
+	{
+		DWORD size = void;
+		debug writefln("ReadFile : buf.ptr=%08X, len=%s", cast(uint)buf.ptr, len);
+		if (ReadFile(hFile, buf.ptr, buf.length, &size, null))
+		{
+			debug(File)
+				writefln("fetch ok : hFile=%08X, buf.length=%s, size=%s, GetLastError()=%s",
+					cast(uint)hFile, buf.length, size, GetLastError());
+			buf = buf[0 .. size];
+			return (size > 0);	// valid on only synchronous read
+		}
+		else
+		{
+			debug(File)
+				writefln("fetch ng : hFile=%08X, size=%s, GetLastError()=%s",
+					cast(uint)hFile, size, GetLastError());
+			throw new Exception("fetch(ref buf[]) error");
+			
+		//	// for overlapped I/O
+		//	eof = (GetLastError() == ERROR_HANDLE_EOF);
+		}
+	}
+
+	
+
+/+	@property bool empty() const
 	{
 		return eof;
 	}
@@ -426,9 +478,9 @@ public:
 	
 	void seek(long offset, SeekPos whence)
 	{
-	}
+	}+/
 }
-static assert(isSource!File);
+//static assert(isSource!File);
 //static assert(isDevice!File);
 
 
@@ -468,8 +520,33 @@ struct Buffered(Source)
 		buffer.length = bufferSize;
 		fetch();
 	}
+
+	bool fetch()
+	in { assert(available.length == 0); }
+	body
+	{
+		view = buffer[0 .. $];
+		return source.fetch(view);
+		//debug(Decoder) writefln("Buffered fetch, source.empty = %s", source.empty);
+	}
 	
-	@property bool empty() const
+	@property const(ubyte)[] available() const
+	{
+		return view;
+	}
+	
+	/**
+		do not fetch automatically
+	*/
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		view = view[n .. $];
+	}
+
+
+/+	@property bool empty() const
 	{
 		//debug(Decoder) writefln("Buffered empty, view.length = %s, source.empty = %s", view.length, source.empty);
 		return view.length==0 && source.empty;
@@ -520,7 +597,7 @@ private:
 		auto v = source.pull(buffer.length, buffer);
 		view = buffer[0 .. v.length];
 		//debug(Decoder) writefln("Buffered fetch, source.empty = %s", source.empty);
-	}
+	}+/
 }
 
 
@@ -712,20 +789,28 @@ auto lined(String=string, R, Delim)(R r, in Delim delim)
 	
 	別名ByLine
 */
+
+//pragma(msg, "is( char : ubyte) = ", is( char : ubyte));
+//pragma(msg, "is(wchar : ubyte) = ", is(wchar : ubyte));
+//pragma(msg, "is(dchar : ubyte) = ", is(dchar : ubyte));
+
 struct Lined(Range, String : Char[], Delim, Char)
-	if (is(typeof(
+/+	if (is(typeof(
 	{
 		void dummy(ref Appender!(Unqual!Char[]) app, ref Range r)
 		{
 			app.put(r.front);
 		}
 	}())))	// →Rangeの要素をmutableな配列にコピーできるか
++/
 {
 private:
 	Range input;
 	Delim delim;
-	Unqual!(typeof(String.init[0]))[] lineBuffer;
+	//Unqual!Char[] lineBuffer;
+	Appender!(Unqual!Char[]) app;	// trivial: reduce initializing const of appender
 	String line;
+	bool eof;
 
 public:
 	this(Range r, Delim d)
@@ -736,8 +821,89 @@ public:
 		debug(Move) writefln("Lined.this -> r.source = %08s, pRefCounter = %08s", &r.source, r.source.pRefCounter ? *r.source.pRefCounter : 0);
 		popFront();
 	}
-	
+
+	/// 
 	@property bool empty() const
+	{
+		return eof;
+	}
+	
+	/// 
+	@property String front() const
+	{
+		return line;
+	}
+	
+	/// 
+	void popFront()
+	in { assert(!empty); }
+	body
+	{
+	//	auto app = appender(lineBuffer);
+		app.clear();
+		Char[] app_put(const(Char)[] buf)
+		{
+			return app.put(buf), app.data;
+		}
+		
+		const(ubyte)[] view;
+		
+		bool fetchExact()	// fillAvailable?
+		{
+			view = input.available;
+			while (view.length == 0)
+			{
+				//writefln("fetched");
+				if (!input.fetch())
+					return false;
+				view = input.available;
+			}
+			return true;
+		}
+		if (!fetchExact())
+			return eof = true;
+		
+		//writefln("Buffered.popFront : ");
+		for (size_t vlen=0, dlen=0; ; )
+		{
+			if (vlen == view.length)
+			{
+				line = app_put(cast(const(Char)[])view);
+				input.consume(vlen);
+				if (!fetchExact())
+					break;
+				
+				vlen = 0;
+				continue;
+			}
+			
+			auto e = view[vlen];
+			++vlen;
+			//writef("%02X ", e);
+			if (e == delim[dlen])
+			{
+				++dlen;
+				if (dlen == delim.length)
+				{
+					if (app.data.length)
+						line = app_put(cast(const(Char)[])view[0 .. vlen - dlen]);
+					else
+						line = cast(const(Char)[])view[0 .. vlen - dlen];
+					
+					input.consume(vlen);
+					break;
+				}
+			}
+			else
+				dlen = 0;
+		}
+		
+	  static if (is(Char == immutable))
+		line = line.idup;
+	}
+
+
+/+	@property bool empty() const
 	{
 		return line.length==0 && input.empty;
 	}
@@ -853,7 +1019,7 @@ public:
   static if (isOutputRange!(Range, String))
 	void put()
 	{
-	}
+	}+/
 }
 unittest
 {
@@ -1039,4 +1205,76 @@ T move(T)(ref T src)
     T result;
     move(src, result);
     return result;
+}
+
+
+
+/*
+	STLport
+		void _Filebuf_base::_S_initialize()
+		{
+		#if defined (__APPLE__)
+		  int mib[2];
+		  size_t pagesize, len;
+		  mib[0] = CTL_HW;
+		  mib[1] = HW_PAGESIZE;
+		  len = sizeof(pagesize);
+		  sysctl(mib, 2, &pagesize, &len, NULL, 0);
+		  _M_page_size = pagesize;
+		#elif defined (__DJGPP) && defined (_CRAY)
+		  _M_page_size = BUFSIZ;
+		#else
+		  _M_page_size = sysconf(_SC_PAGESIZE);
+		#endif
+		}
+		
+		void _Filebuf_base::_S_initialize() {
+		  SYSTEM_INFO SystemInfo;
+		  GetSystemInfo(&SystemInfo);
+		  _M_page_size = SystemInfo.dwPageSize;
+		  // might be .dwAllocationGranularity
+		}
+	DigitalMars C
+		stdio.h
+		
+		#if M_UNIX || M_XENIX
+		#define BUFSIZ		4096
+		extern char * __cdecl _bufendtab[];
+		#elif __INTSIZE == 4
+		#define BUFSIZ		0x4000
+		#else
+		#define BUFSIZ		1024
+		#endif
+
+*/
+
+// from win32.winbase
+struct SYSTEM_INFO
+{
+  union {
+    DWORD dwOemId;
+    struct {
+      WORD wProcessorArchitecture;
+      WORD wReserved;
+    }
+  }
+  DWORD dwPageSize;
+  LPVOID lpMinimumApplicationAddress;
+  LPVOID lpMaximumApplicationAddress;
+  DWORD* dwActiveProcessorMask;
+  DWORD dwNumberOfProcessors;
+  DWORD dwProcessorType;
+  DWORD dwAllocationGranularity;
+  WORD wProcessorLevel;
+  WORD wProcessorRevision;
+}
+extern(Windows) export VOID GetSystemInfo(
+  SYSTEM_INFO* lpSystemInfo);
+
+void getPageSize()
+{
+	SYSTEM_INFO SystemInfo;
+	GetSystemInfo(&SystemInfo);
+	auto _M_page_size = SystemInfo.dwPageSize;
+	writefln("in Win32 page_size = %s", _M_page_size);
 }
