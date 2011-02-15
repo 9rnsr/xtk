@@ -33,7 +33,10 @@ void main(string[] args)
 		foreach (i; 0 .. 1000)
 		{
 			// ubyteの列をstringとみなしてLine分割する
-			foreach (line; lined!string(buffered(File(args[1]), 2048)))
+		//	foreach (line; lined!string(buffered(File(args[1]), 2048)))
+		
+			// ubyteの列(バッファリング有り)をconst(char)[]のsliceで取る
+			foreach (line; lined!(const(char)[])(buffered(File(args[1]), 2048)))
 			{
 				line.dup, ++nlines;
 			}
@@ -470,6 +473,7 @@ struct Buffered(Source)
 	{
 		//debug(Decoder) writefln("Buffered empty, view.length = %s, source.empty = %s", view.length, source.empty);
 		return view.length==0 && source.empty;
+		//return view.length==0;	// synchronous read only
 	}
 	
 	/**
@@ -513,7 +517,7 @@ struct Buffered(Source)
 private:
 	void fetch()
 	{
-		auto v = .pull(source, buffer.length, buffer);
+		auto v = source.pull(buffer.length, buffer);
 		view = buffer[0 .. v.length];
 		//debug(Decoder) writefln("Buffered fetch, source.empty = %s", source.empty);
 	}
@@ -745,6 +749,68 @@ public:
 	
 	void popFront()
 	{
+	  static if (is(Range R : Buffered!U, U) && is(String == const(char)[]))
+	  {
+		pragma(msg, "Lined!(Buffered special case");
+		
+		auto app = appender(lineBuffer);
+		app.clear();
+		
+		bool fetched = false;
+		
+		auto view = input.view;	// todo
+		if (input.view.length == 0)
+		{
+			input.fetch(), view = input.view;	// todo
+		}
+		
+		size_t vlen = 0;
+		size_t dlen = 0;
+		
+		//writefln("Buffered.popFront : ");
+	  Retry:
+		for (vlen = 0; ; )
+		{
+			if (vlen == view.length)
+			{
+				app.put(view);
+				input.fetch, view = input.view;
+				fetched = true;
+				//writefln("fetched");
+				goto Retry;
+			}
+			
+			auto e = view[vlen];
+			++vlen;
+			//writef("%02X ", e);
+			if (e == delim[dlen])
+			{
+				++dlen;
+				if (dlen == delim.length)
+				{
+					input.view = view[vlen .. $];
+					
+					if (fetched)
+						app.put(view[0 .. vlen - dlen]);
+					else
+						vlen -= dlen;
+					
+					break;
+				}
+			}
+			else
+				dlen = 0;
+		}
+		
+		if (fetched)
+			line = app.data;
+		else
+			line = cast(const(char)[])view[0 .. vlen];
+		
+		//writefln("");
+	  }
+	  else
+	  {
 		auto app = appender(lineBuffer);
 		app.clear();
 		
@@ -781,6 +847,7 @@ public:
 		2. ほかから共有されており、書き換わる可能性がある
 		の2種類がある。現実装は2.になっている(1.が必要な時は.dupが必要となる)
 		*/
+	  }
 	}
 	
   static if (isOutputRange!(Range, String))
