@@ -4,65 +4,19 @@
 */
 //module std.device;
 import std.array, std.algorithm, std.range, std.traits;
+import std.stdio;
 version(Windows)
 {
 	import core.sys.windows.windows;
 }
 
-debug = CalcPerf;
-
-import std.stdio;
-import std.perf;
-void main(string[] args)
-{
-	if (args.length == 2)
-	{
-
-	/+	foreach (char c; buffered(File(args[1])))
-		{
-			if (c != '\r') write(c);
-		}	// +/
-		
-
-		//getPageSize();
-
-		auto pc = new PerformanceCounter;
-		pc.start;
-		
-		size_t nlines = 0;
-	//	//バイト列をchar列のバイト表現とみなし、decoder!dcharでcharのRangeに変換する
-	//	foreach (line; lined!string(decoder!char(buffered(File(args[1])))))
-		
-		foreach (i; 0 .. 1000)
-		{
-			// ubyteの列をstringとみなしてLine分割する
-		//	foreach (line; lined!string(buffered(File(args[1]), 2048)))
-		
-			// ubyteの列(バッファリング有り)をconst(char)[]のsliceで取る
-			foreach (line; lined!(const(char)[])(buffered(File(args[1]), 2048)))
-			{
-				line.dup, ++nlines;
-				debug(CalcPerf) {} else
-				{
-					writefln("%s", line);
-				}
-			}
-			debug(CalcPerf) {} else assert(0);
-		}
-		pc.stop;
-		
-		printf("%g line/sec\n", nlines / (1.e-6 * pc.microseconds));
-	}
-}
-
-
 /*
 	Check that S is source.	(exact)
 	Source supports empty and pull operation.
 */
-template isPullableSource(S)
+template isDirectSource(S)
 {
-	enum isPullableSource =
+	enum isDirectSource =
 		is(typeof({
 			void dummy(ref S s)
 			{
@@ -71,9 +25,9 @@ template isPullableSource(S)
 			}
 		}()));
 }
-template isBufferedSource(S)
+template isCachedSource(S)
 {
-	enum isBufferedSource =
+	enum isCachedSource =
 		is(typeof({
 			void dummy(ref S s)
 			{
@@ -87,7 +41,7 @@ template isBufferedSource(S)
 template isSource(S)
 {
 	enum isSource =
-		isPullableSource!S || isBufferedSource!S;
+		isDirectSource!S || isCachedSource!S;
 }
 
 /+/*
@@ -358,8 +312,6 @@ private:
 public:
 	this(string fname)
 	{
-	//	writefln(typeof(this).stringof ~ " ctor");
-		
 		int share = FILE_SHARE_READ | FILE_SHARE_WRITE;
 		int access = GENERIC_READ;
 		int createMode = OPEN_EXISTING;
@@ -701,10 +653,13 @@ struct Lined(Input, Delim, String : Char[], Char)
 	}())))	// →Inputの要素をmutableな配列にコピーできるか
 +/
 {
+	static assert(isCachedSource!Input && is(Char : const(char)));
+
 private:
 	Input input;
 	Delim delim;
-	Appender!(Unqual!Char[]) app;	// trivial: reduce initializing const of appender
+//	Appender!(Unqual!Char[]) app;	// trivial: reduce initializing const of appender
+	Appender!(Unqual!ubyte[]) app;	// trivial: reduce initializing const of appender
 	String line;
 	bool eof;
 
@@ -757,7 +712,7 @@ public:
 		{
 			if (vlen == view.length)
 			{
-				line = (app.put(cast(const(Char)[])view), app.data);
+				line = cast(String)(app.put(view), app.data);
 				input.consume(vlen);
 				if (!fetchExact())
 					break;
@@ -775,9 +730,12 @@ public:
 				if (dlen == delim.length)
 				{
 					if (app.data.length)
-						line = (app.put(cast(const(Char)[])view[0 .. vlen - dlen]), app.data);
+					{
+						//writefln("%s@%s : %s %s %s %s", __FILE__, __LINE__, view, view.length, vlen, dlen);
+						line = cast(String)(app.put(view[0 .. vlen]), app.data[0 .. $ - dlen]);
+					}
 					else
-						line = cast(const(Char)[])view[0 .. vlen - dlen];
+						line = cast(String)view[0 .. vlen - dlen];
 					
 					input.consume(vlen);
 					break;
@@ -964,76 +922,4 @@ T move(T)(ref T src)
     T result;
     move(src, result);
     return result;
-}
-
-
-
-/*
-	STLport
-		void _Filebuf_base::_S_initialize()
-		{
-		#if defined (__APPLE__)
-		  int mib[2];
-		  size_t pagesize, len;
-		  mib[0] = CTL_HW;
-		  mib[1] = HW_PAGESIZE;
-		  len = sizeof(pagesize);
-		  sysctl(mib, 2, &pagesize, &len, NULL, 0);
-		  _M_page_size = pagesize;
-		#elif defined (__DJGPP) && defined (_CRAY)
-		  _M_page_size = BUFSIZ;
-		#else
-		  _M_page_size = sysconf(_SC_PAGESIZE);
-		#endif
-		}
-		
-		void _Filebuf_base::_S_initialize() {
-		  SYSTEM_INFO SystemInfo;
-		  GetSystemInfo(&SystemInfo);
-		  _M_page_size = SystemInfo.dwPageSize;
-		  // might be .dwAllocationGranularity
-		}
-	DigitalMars C
-		stdio.h
-		
-		#if M_UNIX || M_XENIX
-		#define BUFSIZ		4096
-		extern char * __cdecl _bufendtab[];
-		#elif __INTSIZE == 4
-		#define BUFSIZ		0x4000
-		#else
-		#define BUFSIZ		1024
-		#endif
-
-*/
-
-// from win32.winbase
-struct SYSTEM_INFO
-{
-  union {
-    DWORD dwOemId;
-    struct {
-      WORD wProcessorArchitecture;
-      WORD wReserved;
-    }
-  }
-  DWORD dwPageSize;
-  LPVOID lpMinimumApplicationAddress;
-  LPVOID lpMaximumApplicationAddress;
-  DWORD* dwActiveProcessorMask;
-  DWORD dwNumberOfProcessors;
-  DWORD dwProcessorType;
-  DWORD dwAllocationGranularity;
-  WORD wProcessorLevel;
-  WORD wProcessorRevision;
-}
-extern(Windows) export VOID GetSystemInfo(
-  SYSTEM_INFO* lpSystemInfo);
-
-void getPageSize()
-{
-	SYSTEM_INFO SystemInfo;
-	GetSystemInfo(&SystemInfo);
-	auto _M_page_size = SystemInfo.dwPageSize;
-	writefln("in Win32 page_size = %s", _M_page_size);
 }
