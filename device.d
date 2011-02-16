@@ -9,7 +9,6 @@ version(Windows)
 	import core.sys.windows.windows;
 }
 
-//debug = Move;
 debug = CalcPerf;
 
 import std.stdio;
@@ -64,19 +63,19 @@ void main(string[] args)
 template isSource(S)
 {
 	enum isSource = is(typeof({
-		void dummy(ref S s)
-		{
+			void dummy(ref S s)
+			{
 		//	if (s.empty){}
 		//	ubyte[] buf;
 		//	size_t len = 0;
 		//	const(ubyte)[] data = s.pull(len, buf);
 			
 			ubyte[] buf = s.available;
-			size_t n;
-			s.consume(n);
+				size_t n;
+				s.consume(n);
 			if (s.fetch()){}
-		}
-	}()));
+			}
+		}()));
 }
 
 /+/*
@@ -360,24 +359,17 @@ public:
 			std.utf.toUTF16z(fname), access, share, null, createMode, 0, null);
 		pRefCounter = new size_t();
 		*pRefCounter = 1;
-		debug(Move) writefln("ctor   this=%08s, hFile=%08s, cnt=%s",
-			&this, cast(uint)hFile, pRefCounter ? *pRefCounter : 0);
 	}
 	this(this)
 	{
 		if (pRefCounter) ++(*pRefCounter);
-		debug(Move) writefln("cpctor this=%08s, hFile=%08s, cnt=%s",
-			&this, cast(uint)hFile, pRefCounter ? *pRefCounter : 0);
 	}
 	~this()
 	{
-		debug(Move) writefln("dtor   this=%08s, hFile=%08s, cnt=%s",
-			&this, cast(uint)hFile, pRefCounter ? *pRefCounter : 0);
 		if (pRefCounter)
 		{
 			if (--(*pRefCounter) == 0)
 			{
-				debug(Move) writefln("%s", typeof(this).stringof ~ " dtor");
 				//delete pRefCounter;	// trivial: delegate management to GC.
 				CloseHandle(cast(HANDLE)hFile);
 			}
@@ -486,7 +478,6 @@ public:
 
 auto buffered(Source)(Source s, size_t bufferSize=2048)
 {
-	debug(Move) ScopePrint!"buffered" sp = 0;
 	return Buffered!Source(move(s), bufferSize);
 }
 
@@ -515,7 +506,6 @@ struct Buffered(Source)
 	
 	this(Source s, size_t bufferSize)
 	{
-		debug(Move) ScopePrint!"Buffered.this" sp = 0;
 		move(s, source);
 		buffer.length = bufferSize;
 		fetch();
@@ -603,7 +593,6 @@ private:
 
 auto decoder(Char=char, Input)(Input input)
 {
-	debug(Move) ScopePrint!"decoder" sp = 0;
 	return Decoder!(Input, Char)(move(input));
 }
 
@@ -624,7 +613,6 @@ private:
 public:
 	this(Input i)
 	{
-		debug(Move) ScopePrint!"Decoder.this" sp = 0;
 		move(i, input);
 		popFront();		// fetch front
 	}
@@ -754,8 +742,6 @@ else
 auto lined(String=string, R)(R r)
 //	if (isSomeChar!(ElementType!R))
 {
-	debug(Move) ScopePrint!"lined1" sp = 0;
-	debug(Move) writefln("&r = %08X", cast(uint)&r);
 	//pragma(msg, "0: lined : String=", String, ", R=", R/*, ", Delim=", Delim*/);
 	return Lined!(R, String, dstring)(move(r), cast(dstring)NativeNewLine);
 }
@@ -763,7 +749,6 @@ auto lined(String=string, R)(R r)
 auto lined(String=string, R, Delim)(R r, in Delim delim)
 //	if (isSomeChar!(ElementType!R) && is(Unqual!(ElementType!R) == Unqual!(ElementType!Delim)))
 {
-	debug(Move) ScopePrint!"lined2" sp = 0;
 	//pragma(msg, "1: lined : String=", String, ", R=", R, ", Delim=", Delim);
 //static if (is(typeof(delim) : const(dchar)[]))
 	return Lined!(R, String, Delim)(move(r), move(delim));
@@ -815,10 +800,8 @@ private:
 public:
 	this(Range r, Delim d)
 	{
-		debug(Move) ScopePrint!"Lined.this" sp = 0;
 		move(r, input);
 		move(d, delim);
-		debug(Move) writefln("Lined.this -> r.source = %08s, pRefCounter = %08s", &r.source, r.source.pRefCounter ? *r.source.pRefCounter : 0);
 		popFront();
 	}
 
@@ -1147,26 +1130,10 @@ unittest
 
 
 
-debug(Move)
-struct ScopePrint(string msg)
-{
-	this(int dummy)
-	{
-		writefln("Scope enter : %s", msg);
-	}
-	@disable this(this);
-	~this()
-	{
-		writefln("Scope exit  : %s", msg);
-	}
-}
 
 import std.exception : pointsTo;
 void move(T, int line=__LINE__)(ref T source, ref T target)
 {
-	debug(Move) pragma(msg, "move instantiate : line=", line);
-	debug(Move) writefln("move &source=%08X, &target=%08X", cast(uint)&source, cast(uint)&target);
-	
     if (&source == &target) return;
     assert(!pointsTo(source, source));
     static if (is(T == struct))
@@ -1181,9 +1148,7 @@ void move(T, int line=__LINE__)(ref T source, ref T target)
 //      static if (is(typeof(source.__dtor())) || is(typeof(source.__postblit())))
 		static if (hasElaborateDestructor!(typeof(source)))
         {
-			debug(Move) pragma(msg, "  hasElaborateDestructor!T");
             static T empty;
-            debug(Move) writefln("%s source clear", T.stringof);
             memcpy(&source, &empty, T.sizeof);
         }
     }
