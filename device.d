@@ -60,22 +60,34 @@ void main(string[] args)
 	Check that S is source.	(exact)
 	Source supports empty and pull operation.
 */
-template isSource(S)
+template isPullableSource(S)
 {
-	enum isSource = is(typeof({
+	enum isPullableSource =
+		is(typeof({
 			void dummy(ref S s)
 			{
-		//	if (s.empty){}
-		//	ubyte[] buf;
-		//	size_t len = 0;
-		//	const(ubyte)[] data = s.pull(len, buf);
-			
-			ubyte[] buf = s.available;
-				size_t n;
-				s.consume(n);
-			if (s.fetch()){}
+				ubyte[] buf;
+				if (s.pull(buf)){}
 			}
 		}()));
+}
+template isBufferedSource(S)
+{
+	enum isBufferedSource =
+		is(typeof({
+			void dummy(ref S s)
+			{
+				if (s.fetch()){}
+				const(ubyte)[] buf = s.available;
+				size_t n;
+				s.consume(n);
+			}
+		}()));
+}
+template isSource(S)
+{
+	enum isSource =
+		isPullableSource!S || isBufferedSource!S;
 }
 
 /+/*
@@ -124,7 +136,7 @@ template isSeekable(S)
 }+/
 
 
-/*
+/+/*
 	sからlenバイトを読み出し、bufへ格納する
 	→	1.callerから与えられたバッファを埋める
 		2.calleeでバッファを確保し、Viewを返す
@@ -254,7 +266,7 @@ bool push(S)(ref S s, ref const(ubyte)[] buf)
 	}
 }
 
-/+/**
+/**
 	RがRandomAccessRangeでない場合、Cur + |offset|以外の操作がO(n)となる
 	→isRandomAccessRange!R を要件とする (いろいろ考えたが、おそらくこれが妥当と思われる)
 	→最低限の用件としては「ForwardかつLengthとSlicingを持つ」となる
@@ -333,10 +345,7 @@ struct Seekable(R)
 
 
 /**
-	バッファのアロケーションについては消極的
-	
 	File is Seekable Device
-	pure Device (doesn't have Range I/F)
 */
 struct File
 {
@@ -345,7 +354,6 @@ struct File
 private:
 	HANDLE hFile;
 	size_t* pRefCounter;
-	bool eof = false;
 
 public:
 	this(string fname)
@@ -386,99 +394,55 @@ public:
 		false:
 			no element exists.
 */
-
-//	bool fetch(), ubyte[] available, void consume(size_t n)	buffered source
-//	bool fetch(ref ubyte[] buf)								concrete source
-
-	bool fetch(ref ubyte[] buf)
+	bool pull(ref ubyte[] buf)
 	{
 		DWORD size = void;
 		debug writefln("ReadFile : buf.ptr=%08X, len=%s", cast(uint)buf.ptr, len);
 		if (ReadFile(hFile, buf.ptr, buf.length, &size, null))
 		{
 			debug(File)
-				writefln("fetch ok : hFile=%08X, buf.length=%s, size=%s, GetLastError()=%s",
+				writefln("pull ok : hFile=%08X, buf.length=%s, size=%s, GetLastError()=%s",
 					cast(uint)hFile, buf.length, size, GetLastError());
 			buf = buf[0 .. size];
-			return (size > 0);	// valid on only synchronous read
+			return (size > 0);	// valid on only blocking read
 		}
 		else
 		{
 			debug(File)
-				writefln("fetch ng : hFile=%08X, size=%s, GetLastError()=%s",
+				writefln("pull ng : hFile=%08X, size=%s, GetLastError()=%s",
 					cast(uint)hFile, size, GetLastError());
-			throw new Exception("fetch(ref buf[]) error");
+			throw new Exception("pull(ref buf[]) error");
 			
 		//	// for overlapped I/O
 		//	eof = (GetLastError() == ERROR_HANDLE_EOF);
 		}
 	}
 
-	
-
-/+	@property bool empty() const
-	{
-		return eof;
-	}
-	
-	const(ubyte)[] pull(size_t len, ubyte[] buf)
-	{
-		enum : uint { ERROR_HANDLE_EOF = 38 }	// todo
-
-		// yet support only synchronous read
-		
-		if (buf.length > 0)
-			len = min(buf.length, len);
-		else
-			buf.length = len;	// allocation
-		
-		DWORD size = void;
-		debug writefln("ReadFile : buf.ptr=%08X, len=%s", cast(uint)buf.ptr, len);
-		if (ReadFile(hFile, buf.ptr, len, &size, null))
-		{
-			buf = buf[0 .. size];
-			//eof = (size == 0);
-			eof = (size < len);		// valid on only synchronous read
-			//writefln("File pull, len = %s, size = %s, GetLastError == %s, ERROR_HANDLE_EOF = %s", len, size, GetLastError(), ERROR_HANDLE_EOF);
-		}
-		else
-		{
-			debug writefln("hFile=%08X, size=%s, GetLastError()=%s", cast(uint)hFile, size, GetLastError());
-			
-			throw new Exception("pull error");	//?
-			
-		//	// for overlapped I/O
-		//	eof = (GetLastError() == ERROR_HANDLE_EOF);
-		}
-		
-		return buf;
-	}
-	
 	bool push(ref const(ubyte)[] buf)
 	{
-		bool result;
-		
-		size_t len;
-		if (WriteFile(hFile, buf.ptr, buf.length, &len, null))
-			result = (len == buf.length);
+		DWORD size = void;
+		if (WriteFile(hFile, buf.ptr, buf.length, &size, null))
+		{
+			buf = buf[size .. $];
+			return true;	// (size == buf.length);
+		}
 		else
+		{
 			throw new Exception("push error");	//?
-		
-		buf = buf[len .. $];
-		return result;
+	}
 	}
 	
-	void seek(long offset, SeekPos whence)
+/+	void seek(long offset, SeekPos whence)
 	{
 	}+/
 }
-//static assert(isSource!File);
+static assert(isSource!File);
 //static assert(isDevice!File);
 
 
-auto buffered(Source)(Source s, size_t bufferSize=2048)
+auto buffered(Input)(Input i, size_t bufferSize=2048)
 {
-	return Buffered!Source(move(s), bufferSize);
+	return Buffered!Input(move(i), bufferSize);
 }
 
 /**
@@ -498,28 +462,32 @@ auto buffered(Source)(Source s, size_t bufferSize=2048)
 	x	BufferedはRangeとして扱ったほうが効率がよいため、Souce I/Fは提供しない
 	o	Souce/InputRangeのどちらで扱ってもコストはほぼ同じはず
 */
-struct Buffered(Source)
+struct Buffered(Input)
 {
-	Source source;
+	Input input;
 	ubyte[] buffer;
 	ubyte[] view;	// Not yet popFront/pulled data view on buffer
 	
-	this(Source s, size_t bufferSize)
+	this(Input i, size_t bufferSize)
 	{
-		move(s, source);
+		move(i, input);
 		buffer.length = bufferSize;
 		fetch();
 	}
 
+	/**
+	*/
 	bool fetch()
 	in { assert(available.length == 0); }
 	body
 	{
 		view = buffer[0 .. $];
-		return source.fetch(view);
-		//debug(Decoder) writefln("Buffered fetch, source.empty = %s", source.empty);
+		return input.pull(view);
+		//debug(Decoder) writefln("Buffered fetch, input.empty = %s", input.empty);
 	}
 	
+	/**
+	*/
 	@property const(ubyte)[] available() const
 	{
 		return view;
@@ -534,61 +502,8 @@ struct Buffered(Source)
 	{
 		view = view[n .. $];
 	}
-
-
-/+	@property bool empty() const
-	{
-		//debug(Decoder) writefln("Buffered empty, view.length = %s, source.empty = %s", view.length, source.empty);
-		return view.length==0 && source.empty;
-		//return view.length==0;	// synchronous read only
-	}
-	
-	/**
-		バッファを空にすることを優先する
-		fetchはバッファが空のときのみ行う
-	*/
-	const(ubyte)[] pull(size_t len, ubyte[] buf=null)
-	{
-		if (view.length == 0)
-			fetch();
-		
-		len = min(len, view.length);
-		if (buf.length > 0)
-		{
-			len = min(len, buf.length);
-			buf[0 .. len] = view[0 .. len];
-			view = view[len .. $];
-			return buf[0 .. len];
-		}
-		else
-		{
-			buf = view[0 .. len];
-			view = view[len .. $];
-			return buf;
-		}
-	}
-	
-	
-	@property ref ubyte front()
-	{
-		return view[0];
-	}
-	
-	void popFront()
-	{
-		view = view[1 .. $];
-		if (view.length == 0)
-			fetch();
-	}
-
-private:
-	void fetch()
-	{
-		auto v = source.pull(buffer.length, buffer);
-		view = buffer[0 .. v.length];
-		//debug(Decoder) writefln("Buffered fetch, source.empty = %s", source.empty);
-	}+/
 }
+static assert(isSource!(Buffered!File));
 
 
 auto decoder(Char=char, Input)(Input input)
@@ -604,7 +519,6 @@ struct Decoder(Input, Char)
 	if (isSource!Input ||
 		(isInputRange!Input && is(ElementType!Input : const(ubyte))))
 {
-
 private:
 	Input input;
 	bool eof;
@@ -740,20 +654,13 @@ else
 		lined!(const(char))("foo\nbar\nbaz", "\n")
 */
 auto lined(String=string, R)(R r)
-//	if (isSomeChar!(ElementType!R))
 {
-	//pragma(msg, "0: lined : String=", String, ", R=", R/*, ", Delim=", Delim*/);
-	return Lined!(R, String, dstring)(move(r), cast(dstring)NativeNewLine);
+	return Lined!(R, dstring, String)(move(r), cast(dstring)NativeNewLine);
 }
 /// ditto
 auto lined(String=string, R, Delim)(R r, in Delim delim)
-//	if (isSomeChar!(ElementType!R) && is(Unqual!(ElementType!R) == Unqual!(ElementType!Delim)))
 {
-	//pragma(msg, "1: lined : String=", String, ", R=", R, ", Delim=", Delim);
-//static if (is(typeof(delim) : const(dchar)[]))
-	return Lined!(R, String, Delim)(move(r), move(delim));
-//else
-//	return Lined!(R, String)(r, array(delim));
+	return Lined!(R, Delim, String)(move(r), move(delim));
 }
 
 /**
@@ -773,32 +680,36 @@ auto lined(String=string, R, Delim)(R r, in Delim delim)
 		x	書き換えによってオリジナルのSink(Fileなど)への書き込みが行われる
 	
 	別名ByLine
+	
+	
+	----
+	より抽象的な表現
+	InputからDelimを区切りとして、Inputの要素配列を切り出す
 */
 
 //pragma(msg, "is( char : ubyte) = ", is( char : ubyte));
 //pragma(msg, "is(wchar : ubyte) = ", is(wchar : ubyte));
 //pragma(msg, "is(dchar : ubyte) = ", is(dchar : ubyte));
 
-struct Lined(Range, String : Char[], Delim, Char)
+struct Lined(Input, Delim, String : Char[], Char)
 /+	if (is(typeof(
 	{
-		void dummy(ref Appender!(Unqual!Char[]) app, ref Range r)
+		void dummy(ref Appender!(Unqual!Char[]) app, ref Input r)
 		{
 			app.put(r.front);
 		}
-	}())))	// →Rangeの要素をmutableな配列にコピーできるか
+	}())))	// →Inputの要素をmutableな配列にコピーできるか
 +/
 {
 private:
-	Range input;
+	Input input;
 	Delim delim;
-	//Unqual!Char[] lineBuffer;
 	Appender!(Unqual!Char[]) app;	// trivial: reduce initializing const of appender
 	String line;
 	bool eof;
 
 public:
-	this(Range r, Delim d)
+	this(Input r, Delim d)
 	{
 		move(r, input);
 		move(d, delim);
@@ -822,13 +733,6 @@ public:
 	in { assert(!empty); }
 	body
 	{
-	//	auto app = appender(lineBuffer);
-		app.clear();
-		Char[] app_put(const(Char)[] buf)
-		{
-			return app.put(buf), app.data;
-		}
-		
 		const(ubyte)[] view;
 		
 		bool fetchExact()	// fillAvailable?
@@ -846,12 +750,14 @@ public:
 		if (!fetchExact())
 			return eof = true;
 		
+		app.clear();
+		
 		//writefln("Buffered.popFront : ");
 		for (size_t vlen=0, dlen=0; ; )
 		{
 			if (vlen == view.length)
 			{
-				line = app_put(cast(const(Char)[])view);
+				line = (app.put(cast(const(Char)[])view), app.data);
 				input.consume(vlen);
 				if (!fetchExact())
 					break;
@@ -869,7 +775,7 @@ public:
 				if (dlen == delim.length)
 				{
 					if (app.data.length)
-						line = app_put(cast(const(Char)[])view[0 .. vlen - dlen]);
+						line = (app.put(cast(const(Char)[])view[0 .. vlen - dlen]), app.data);
 					else
 						line = cast(const(Char)[])view[0 .. vlen - dlen];
 					
@@ -886,120 +792,8 @@ public:
 	}
 
 
-/+	@property bool empty() const
-	{
-		return line.length==0 && input.empty;
-	}
-	
-	@property String front() const
-	{
-		return line;
-	}
-	
-	void popFront()
-	{
-	  static if (is(Range R : Buffered!U, U) && is(String == const(char)[]))
-	  {
-		pragma(msg, "Lined!(Buffered special case");
-		
-		auto app = appender(lineBuffer);
-		app.clear();
-		
-		bool fetched = false;
-		
-		auto view = input.view;	// todo
-		if (input.view.length == 0)
-		{
-			input.fetch(), view = input.view;	// todo
-		}
-		
-		size_t vlen = 0;
-		size_t dlen = 0;
-		
-		//writefln("Buffered.popFront : ");
-	  Retry:
-		for (vlen = 0; ; )
-		{
-			if (vlen == view.length)
-			{
-				app.put(view);
-				input.fetch, view = input.view;
-				fetched = true;
-				//writefln("fetched");
-				goto Retry;
-			}
-			
-			auto e = view[vlen];
-			++vlen;
-			//writef("%02X ", e);
-			if (e == delim[dlen])
-			{
-				++dlen;
-				if (dlen == delim.length)
-				{
-					input.view = view[vlen .. $];
-					
-					if (fetched)
-						app.put(view[0 .. vlen - dlen]);
-					else
-						vlen -= dlen;
-					
-					break;
-				}
-			}
-			else
-				dlen = 0;
-		}
-		
-		if (fetched)
-			line = app.data;
-		else
-			line = cast(const(char)[])view[0 .. vlen];
-		
-		//writefln("");
-	  }
-	  else
-	  {
-		auto app = appender(lineBuffer);
-		app.clear();
-		
-		size_t dlen = 0;
-	//	foreach (e; input)	inputがここでコピーされるので、inputそのものは進まない！
-		while (!input.empty)
-		{
-			auto e = input.front;
-			input.popFront();
-		//	size_t i = 0;
-		//	writefln("Lined.popFront, input.front(%s) = %0*X, stride = %s",
-		//		typeof(e).stringof, typeof(e).sizeof*2, e, std.utf.stride((&e)[0 .. 1], i));
-			app.put(e);
-			if (e == delim[dlen])
-			{
-				++dlen;
-				if (dlen == delim.length)
-				{
-					app.shrinkTo(app.data.length - delim.length);
-					break;
-				}
-			}
-			else
-				dlen = 0;
-		}
-	  static if (is(typeof(String.init[0]) == immutable))
-		line = app.data.idup;
-	  else
-		line = app.data;
-		
-		/*
-		mutableな配列を返す場合は、その要素の寿命について
-		1. ほかから共有されていない
-		2. ほかから共有されており、書き換わる可能性がある
-		の2種類がある。現実装は2.になっている(1.が必要な時は.dupが必要となる)
-		*/
-	  }
-	}
-	
-  static if (isOutputRange!(Range, String))
+/+
+  static if (isOutputRange!(Input, String))
 	void put()
 	{
 	}+/
