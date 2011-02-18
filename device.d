@@ -1,8 +1,8 @@
 ﻿/**
-	定義
-	Source/Sinkの基本要素はubyteである
 */
 //module std.device;
+module device;
+
 import std.array, std.algorithm, std.range, std.traits;
 import std.stdio;
 version(Windows)
@@ -11,37 +11,124 @@ version(Windows)
 }
 
 /*
-	Check that S is source.	(exact)
-	Source supports empty and pull operation.
+	std.file.File.ByChunkの問題点：
+		ubyte[]のレンジである
+		説明：
+			Fileは論理的にはubyteのストリームであるが、
+			レンジを使用する側(bLineやalgorithmなど)はbyChunkを考慮するために
+			ubyte[]のレンジを特別扱いしなくてはならない
+		結論：
+			バッファリングされたストリームは、バッファにアクセスするための
+			IFを別途必要とする。Range I/Fではこれは満たせない。
+
+	The problem of std.file.File.ByChunk is that ElementType!ByChunk is ubyte[].
+	This means that ByChunk is range of ubyte[], but File is stream of ubyte.
+	Then, wrapper ranges using ByChunk as original range (e.g. byLine) 
+	should have special case. This is bad design.
+	
+	Filters buffering data from original source(e.g. File) should different
+	interface with neither File or Range, I call it Pool.
+	
+	This module defines two interface to read, Source and Pool.
+	- Source is pulled data specificated N length by user of source.
+	- Pool is referenced already cached data by user of pool.
+	Normally pools wrap a source or other pools, and provide range interface if it can.
+	
+	Decoder
+		Conversion filter.
+		When input is a pool of dchar, Decoder can become slicing filter.
+	Lined
+		if string type is const(char)[], lines that enumerated with range I/F will be
+		slices of input pool as can as possilble.
+		Slicing filter.
+	
+	Pool has an array of data it caches, and you can see it through its property $(D available).
+	Users of pool can reduce the cost of copying by getting slices of it.
+	
+	On the other hand, Source does'nt have cached data in itself.
+	Pools that take Source as input may ...
+	
+	
 */
-template isDirectSource(S)
+
+/**
+Returns $(D true) if $(D S) is a $(I source). A Source must define the
+primitive $(D pull). The following code should compile for any source.
+$(D S)が$(I Source)の場合に$(D true)を返す。$(BR)
+
+----
+Source s;                   // when s is source, it
+ubyte[] buf;                // can read ubyte[] data into buffer
+bool empty = s.pull(buf);   // can check source was already empty
+----
+
+Basic element of source is ubyte.
+
+The operations of $(I Source):$(BR)
+$(I Source)の操作:$(BR)
+$(DDOC_MEMBERS
+$(DDOC_DECL bool pull(ref ubyte[] buf))
+$(DDOC_DECL_DD
+	This operation read data from source into $(D buf).$(BR)
+	この操作はsourceからデータを読み出し、$(D buf)に格納する。$(BR)
+	
+	If $(D buf.length) is 0, then you can check only source is valid.$(BR)
+	$(D buf.length)が0の場合、sourceが読み出し可能状態であるかのみをチェックできる。$(BR)
+	
+	$(DDOC_SECTION_H InAssertion:$(BR)In契約:)
+	$(DDOC_SECTION
+	source is not yet $(D pull)ed, or previous $(D pull) operation returns $(D true).$(BR)
+	sourceはまだ$(D pull)されたことがないか、あるいは前回の$(D pull)操作で$(D true)を返している。$(BR)
+	)
+	
+	$(DDOC_SECTION_H Returns:$(BR)返値:)
+	$(DDOC_SECTION
+	If source was valid before reading, $(D buf) filled the read data(its length >= 0) and returns $(D true).$(BR)
+	読み出し前にsourceが有効な状態だった場合、$(D buf)を読み出したデータで埋め、$(D true)を返す。$(BR)
+	Otherwise returns $(D false).$(BR)
+	そうでない場合、$(D false)を返す。$(BR)
+	)
+))
+*/
+template isSource(S)
 {
-	enum isDirectSource =
+	enum isSource =
 		is(typeof({
 			void dummy(ref S s)
 			{
 				ubyte[] buf;
-				if (s.pull(buf)){}
+				bool empty = s.pull(buf);
 			}
 		}()));
 }
-template isCachedSource(S)
+
+/**
+
+In definition, initial state of pool has 0 length $(D available).$(BR)
+定義では、poolの初期状態は長さ0の$(D available)を持つ。$(BR)
+You can assume that pool is not $(D fetch)-ed yet.$(BR)
+これはpoolがまだ一度も$(D fetch)されたことがないと見なすことができる。$(BR)
+
+Basic element of sink is ubyte.
+
+*/
+template isInputPool(S)
 {
-	enum isCachedSource =
+	enum isInputPool =
 		is(typeof({
 			void dummy(ref S s)
 			{
 				if (s.fetch()){}
-				const(ubyte)[] buf = s.available;
+				auto buf = s.available;
 				size_t n;
 				s.consume(n);
 			}
 		}()));
 }
-template isSource(S)
+
+template ElementType(S) if (isInputPool!S)
 {
-	enum isSource =
-		isDirectSource!S || isCachedSource!S;
+	alias typeof(S.init.available[0]) ElementType;
 }
 
 /+/*
@@ -90,136 +177,7 @@ template isSeekable(S)
 }+/
 
 
-/+/*
-	sからlenバイトを読み出し、bufへ格納する
-	→	1.callerから与えられたバッファを埋める
-		2.calleeでバッファを確保し、Viewを返す
-*/
-const(ubyte)[] pull(S)(ref S s, size_t len, ubyte[] buf=null)
-{
-	static if (hasMember!(S, "pull") && is(typeof(s.pull(len, buf))))
-	{
-		return s.pull(len, buf);
-	}
-//	else static if (hasSlicing!S && hasLength!S)
-//	{
-//		//todo
-//	}
-	else static if (isInputRange!S)
-	{
-		// todo バイト列とオブジェクト型の変換(serialization)はどうする？
-		static assert(is(ElementType!S : const(ubyte)));
-		
-		if (buf.length > 0)
-			len = min(buf.length, len);
-		else
-			buf.length = len;
-		
-		auto outbuf = buf[0 .. len];
-		
-		// rangeをSourceとして扱う場合はすべてputに任せる
-		//writefln("S == %s, outbuf.length == %s, s.length == %s", S.stringof, outbuf.length, s.length);
-		
-	//	put(outbuf, s);
-		// outbufを埋め尽くすか、sが空になるまでputする
-		// std.range.putはsからすべて吐き出せない場合にbreakしてくれない
-		for (; !s.empty && !outbuf.empty; s.popFront())
-		{
-			put(outbuf, s.front);
-		}
-		
-		return buf[0 .. $-outbuf.length];
-	}
-	else
-	{
-		static assert(0, S.stringof~" does not support pull operation");
-	}
-}
-unittest
-{
-	ubyte[] arr = [1,2,3];
-	ubyte[] src = arr;
-	const(ubyte)[] buf = src.pull(2);
-	assert(src == [3]);
-	assert(buf == [1,2]);
-	
-	struct ByteRange
-	{
-		ubyte[] arr;
-		@property bool empty() const{ return arr.length == 0; }
-		@property ref ubyte front()	{ return arr[0]; }
-		void popFront()				{ arr = arr[1 .. $]; }
-	}
-	auto r = ByteRange(arr);
-	buf = .pull(r, 2);
-	assert(array(r) == [3]);
-	assert(buf == [1, 2]);
-}
-
-/**
-	sourceの終端に達するか、もしくは正しくlenバイトのデータをpullする
-*/
-const(ubyte)[] pullExact(S)(ref S s, size_t len, ubyte[] buf=null)
-out(data)
-{
-	assert(s.empty || data.length == len);
-}
-body
-{
-	//debug(Decoder) writefln("pullExact len = %s", len);
-
-	if (buf.length > 0)
-		len = min(buf.length, len);
-	else
-		buf.length = len;	// allocation
-	
-	auto data = .pull(s, len, buf);
-	if (data.length < len)
-	{
-		auto rem = buf[data.length .. $];
-		while (!s.empty && rem.length > 0)
-		{
-			data = .pull(s, rem.length, rem);
-			rem = rem[data.length .. $];
-		}
-		//data = buf[0 .. $ - rem.length];
-		//debug(Decoder) writefln("pullExact rem.length = %s, s.empty = %s", rem.length, s.empty);
-		if (rem.length > 0)
-			throw new /*Read*/Exception("not enough data in stream");	// from std.stream.readExact
-	}
-	//return data;
-	return buf;
-}
-unittest
-{
-}
-
-/**
-	引数bufのslicingと、返値の2方向で処理後の状態を返している
-	→あんまりよくないデザインかな…
-	
-*/
-bool push(S)(ref S s, ref const(ubyte)[] buf)
-{
-	static if (isOutputRange!S)
-	{
-		// todo バイト列とオブジェクト型の変換(serialization)はどうする？
-		static assert(is(ElementType!S : ubyte));
-		
-		//rangeをsinkとして扱う場合は、putにすべてを任せる
-		put(s, buf);
-		return buf.length > 0 || !s.empty;
-	}
-	else static if (is(typeof(s.push(buf))))
-	{
-		return s.push(buf);
-	}
-	else
-	{
-		static assert(0, S.stringof~" does not support push operation");
-	}
-}
-
+/+
 /**
 	RがRandomAccessRangeでない場合、Cur + |offset|以外の操作がO(n)となる
 	→isRandomAccessRange!R を要件とする (いろいろ考えたが、おそらくこれが妥当と思われる)
@@ -310,6 +268,8 @@ private:
 	size_t* pRefCounter;
 
 public:
+	/**
+	*/
 	this(string fname)
 	{
 		int share = FILE_SHARE_READ | FILE_SHARE_WRITE;
@@ -337,15 +297,13 @@ public:
 		}
 	}
 
-/**
+	/**
 	Request n number of elements.
 	Returns:
-		true:
-			available was filled with equal (0 <= len <= n) elements.
-			and allows next fetch.
-		false:
-			no element exists.
-*/
+		$(UL
+			$(LI $(D true ) : You can request next pull.)
+			$(LI $(D false) : No element exists.))
+	*/
 	bool pull(ref ubyte[] buf)
 	{
 		DWORD size = void;
@@ -370,6 +328,8 @@ public:
 		}
 	}
 
+	/**
+	*/
 	bool push(ref const(ubyte)[] buf)
 	{
 		DWORD size = void;
@@ -388,46 +348,46 @@ public:
 	{
 	}+/
 }
-static assert(isSource!File);
-//static assert(isDevice!File);
+unittest
+{
+	static assert(isSource!File);
+	//static assert(isDevice!File);
+	assert(0);	// todo
+}
 
-
-auto buffered(Input)(Input i, size_t bufferSize=2048)
+/**
+Buffered構築用の補助関数
+*/
+Buffered!Input buffered(Input)(Input i, size_t bufferSize = 2048)
 {
 	return Buffered!Input(move(i), bufferSize);
 }
 
 /**
-?	BufferedはSourceで、かつInputRangeのI/Fを持つ
-	
-?	Bufferedは入力(Range/Source)をPartial Random Access Rangeにマップする
-
-	バッファのアロケーションについては積極的
-	
-	
-	RangeまたはSourceを取り、InputRangeとなる
-	
-	
-	
-	別名ByChunk
-	
-	x	BufferedはRangeとして扱ったほうが効率がよいため、Souce I/Fは提供しない
-	o	Souce/InputRangeのどちらで扱ってもコストはほぼ同じはず
+InputとしてSource/配列/InputRangeを取り、ubyteのPool I/Fを提供する
 */
-struct Buffered(Input)
+struct Buffered(Input) if (isSource!Input)
 {
+private:
 	Input input;
 	ubyte[] buffer;
 	ubyte[] view;	// Not yet popFront/pulled data view on buffer
-	
+
+public:
+	/**
+	Params:
+		input		= input source
+		bufferSize	= バッファリングされる要素数
+	*/
 	this(Input i, size_t bufferSize)
 	{
 		move(i, input);
 		buffer.length = bufferSize;
-		fetch();
+//		fetch();		// DO NOT NEED, FIX!
 	}
 
 	/**
+	Interfaces of pool.
 	*/
 	bool fetch()
 	in { assert(available.length == 0); }
@@ -438,16 +398,13 @@ struct Buffered(Input)
 		//debug(Decoder) writefln("Buffered fetch, input.empty = %s", input.empty);
 	}
 	
-	/**
-	*/
+	/// ditto
 	@property const(ubyte)[] available() const
 	{
 		return view;
 	}
 	
-	/**
-		do not fetch automatically
-	*/
+	/// ditto
 	void consume(size_t n)
 	in { assert(n <= available.length); }
 	body
@@ -455,28 +412,218 @@ struct Buffered(Input)
 		view = view[n .. $];
 	}
 }
-static assert(isSource!(Buffered!File));
-
-
-auto decoder(Char=char, Input)(Input input)
+unittest
 {
-	return Decoder!(Input, Char)(move(input));
+	static assert(isInputPool!(Buffered!File));
+	assert(0);	// todo
+}
+
+/// ditto
+struct Buffered(Input) if (isArray!Input)
+{
+private:
+	alias Unqual!(ElementType!Input) E;
+	Input input;
+	size_t vewLen;
+
+public:
+	/*
+	bufferSizeは無視される
+	*/
+	this(Input i, size_t bufferSize)
+	{
+		move(i, input);
+	}
+
+	/**
+	Interfaces of pool.
+	*/
+	bool fetch()
+	in { assert(available.length == 0); }
+	body
+	{
+		if (input.empty)
+			return false;
+		return true;
+	}
+	
+	/// ditto
+	@property const(E)[] available() const
+	{
+		return input;
+	}
+	
+	/// ditto
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		input = input[1 .. $];
+	}
+}
+unittest
+{
+	assert(0);	// todo
+}
+
+/// ditto
+struct Buffered(Input) if (!isArray!Input && isInputRange!Input)
+{
+private:
+	alias Unqual!(ElementType!Input) E;
+	Input input;
+	Unqual!E[] buffer;
+	Unqual!E[] view;
+
+public:
+	/**
+	*/
+	this(Input i, size_t bufferSize)
+	{
+		move(i, input);
+		buffer.length = bufferSize;
+	}
+
+	/**
+	Interfaces of pool.
+	*/
+	bool fetch()
+	in { assert(available.length == 0); }
+	body
+	{
+		if (input.empty)
+			return false;
+		
+		size_t i = 0;
+		for (; input.empty && i<buffer.length; ++i)
+		{
+			buffer[i] = input.front;
+			input.popFront();
+		}
+		view = buffer[0 .. i];
+		return true;
+	}
+	
+	/// ditto
+	@property const(E)[] available() const
+	{
+		return view;
+	}
+	
+	/// ditto
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		view = view[1 .. $];
+	}
+}
+unittest
+{
+	assert(0);	// todo
+}
+
+/**
+PoolをInputRangeに変換する
+Design:
+	Rangeはコンストラクト直後にemptyが取れる、つまりPoolでいうfetch済みである必要があるが、
+	Poolは未fetchであることが必要なので互いの要件が矛盾する。よってPoolはInputRangeを
+	同時に提供できないため、これをWrapするRangedが必要となる。
+*/
+struct Ranged(Input) if (isInputPool!Input)
+{
+private:
+	Input input;
+	bool eof;
+
+public:
+	/**
+	Inputにconstructionを委譲する
+	*/
+	this(Args...)(Args args)
+	{
+		move(Input(args), input);
+		eof = input.fetch();
+	}
+
+	/**
+	Interfaces of input range.
+	*/
+	@property bool empty() const
+	{
+		return eof;
+	}
+	
+	/// ditto
+	@property ubyte front()
+	{
+		return available[0];
+	}
+	/// ditto
+	@property void front(ubyte e)
+	{
+		available[0] = e;
+	}
+	
+	/// ditto
+	void popFront()
+	{
+		consume(1);
+		if (available.length == 0)
+			eof = fetch();
+	}
+}
+
+/**
+Decoder構築用の補助関数
+*/
+auto decoder(Char=char, Input)(Input input, size_t bufferSize = 2048)
+{
+	return Decoder!(Input, Char)(move(input), bufferSize);
 }
 
 /**
 	Source、またはubyteのRangeをChar型のバイト表現とみなし、
 	これをdecodeしたdcharのRangeを構成する
+
+	//----
+	Poolを取ったときはPoolに
+	Sourceを取ったときはコンストラクタで与えられたbufferSizeのPoolになる
+	どちらも、Decoder自体はRange I/Fを持つ(予定)
+Bugs:
+	未完成
 */
 struct Decoder(Input, Char)
 	if (isSource!Input ||
 		(isInputRange!Input && is(ElementType!Input : const(ubyte))))
 {
+	static assert(0);	// todo
 private:
 	Input input;
 	bool eof;
+  static if (isSource!Input)
+	dchar[] buffer;
+  static if (isInputPool!Input)
+  {
+	ElementType!Input[] remain;
+	Appender!(dchar[]) buffer;
+	dchar[] view;
+  }
+  else
+  {
 	dchar ch;
+  }
 
 public:
+  static if (isSource!Input)
+	this(Input i, size_t bufferSize = 2048)
+	{
+		buffer.length = 2048;
+		
+		move(i, input);
+		popFront();		// fetch front
+	}
+  static if (isInputPool!Input)
 	this(Input i)
 	{
 		move(i, input);
@@ -491,6 +638,66 @@ public:
 	@property dchar front()
 	{
 		return ch;
+	}
+	
+  static if (isInputPool!Input)
+  {
+	bool fetch()
+	in { assert(available.length == 0); }
+	body
+	{
+		buffer.clear();
+		
+		remain = input.available;
+		if (remain.length)
+			remain = remain.idup, input.consume(remain.length);
+		
+		if (!input.fetch())
+			return false;	// remainがorphan byteとして残る
+		
+		if (!available.length)
+			return true;	// NonBlocking I/O
+		
+		assert(remain.length >= 0);
+		assert(input.available.length > 0);
+		
+		auto buf = chain(remain, input.available);
+		size_t i = 0;
+		foreach (e; buf)
+		{
+			try{
+				c = decode(buf[i .. $], i);		// decode はslicableなRangeを取れない...
+			}catch (UtfException e){
+				break;
+			}
+			buffer.put(c);
+		}
+		if (i < remain.length)
+			remain = remain[i .. $];
+		else
+			input.consume(i - remain.length);
+			delete remain;
+		
+		view = buffer.data;
+	}
+	@property const(dchar)[] available()
+	{
+		return view;
+	}
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		view = view[n .. $];
+	}
+	
+  }
+	void popFront()
+	{
+		
+		
+		
+		
 	}
 	
 	void popFront()
@@ -600,6 +807,11 @@ else
 	static assert(0, "not yet supported");
 }
 
+
+//pragma(msg, "is( char : ubyte) = ", is( char : ubyte));
+//pragma(msg, "is(wchar : ubyte) = ", is(wchar : ubyte));
+//pragma(msg, "is(dchar : ubyte) = ", is(dchar : ubyte));
+
 /**
 	Examples:
 		lined!string(buffered(File("foo.txt")))
@@ -634,15 +846,10 @@ auto lined(String=string, R, Delim)(R r, in Delim delim)
 	別名ByLine
 	
 	
-	----
+	//----
 	より抽象的な表現
 	InputからDelimを区切りとして、Inputの要素配列を切り出す
 */
-
-//pragma(msg, "is( char : ubyte) = ", is( char : ubyte));
-//pragma(msg, "is(wchar : ubyte) = ", is(wchar : ubyte));
-//pragma(msg, "is(dchar : ubyte) = ", is(dchar : ubyte));
-
 struct Lined(Input, Delim, String : Char[], Char)
 /+	if (is(typeof(
 	{
@@ -653,17 +860,19 @@ struct Lined(Input, Delim, String : Char[], Char)
 	}())))	// →Inputの要素をmutableな配列にコピーできるか
 +/
 {
-	static assert(isCachedSource!Input && is(Char : const(char)));
+	static assert(isInputPool!Input && is(Char : const(char)));
 
 private:
 	Input input;
 	Delim delim;
 //	Appender!(Unqual!Char[]) app;	// trivial: reduce initializing const of appender
-	Appender!(Unqual!ubyte[]) app;	// trivial: reduce initializing const of appender
+	Appender!(Unqual!ubyte[]) buffer;	// trivial: reduce initializing const of appender
 	String line;
 	bool eof;
 
 public:
+	/**
+	*/
 	this(Input r, Delim d)
 	{
 		move(r, input);
@@ -671,19 +880,21 @@ public:
 		popFront();
 	}
 
-	/// 
+	/**
+	Interfaces of input range.
+	*/
 	@property bool empty() const
 	{
 		return eof;
 	}
 	
-	/// 
+	/// ditto
 	@property String front() const
 	{
 		return line;
 	}
 	
-	/// 
+	/// ditto
 	void popFront()
 	in { assert(!empty); }
 	body
@@ -705,14 +916,14 @@ public:
 		if (!fetchExact())
 			return eof = true;
 		
-		app.clear();
+		buffer.clear();
 		
 		//writefln("Buffered.popFront : ");
 		for (size_t vlen=0, dlen=0; ; )
 		{
 			if (vlen == view.length)
 			{
-				line = cast(String)(app.put(view), app.data);
+				line = cast(String)(buffer.put(view), buffer.data);
 				input.consume(vlen);
 				if (!fetchExact())
 					break;
@@ -729,10 +940,10 @@ public:
 				++dlen;
 				if (dlen == delim.length)
 				{
-					if (app.data.length)
+					if (buffer.data.length)
 					{
 						//writefln("%s@%s : %s %s %s %s", __FILE__, __LINE__, view, view.length, vlen, dlen);
-						line = cast(String)(app.put(view[0 .. vlen]), app.data[0 .. $ - dlen]);
+						line = cast(String)(buffer.put(view[0 .. vlen]), buffer.data[0 .. $ - dlen]);
 					}
 					else
 						line = cast(String)view[0 .. vlen - dlen];
@@ -916,7 +1127,6 @@ void move(T, int line=__LINE__)(ref T source, ref T target)
         // }
     }
 }
-/// Ditto
 T move(T)(ref T src)
 {
     T result;

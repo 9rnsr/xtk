@@ -9,6 +9,7 @@ void main(string[] args)
 	{
 		auto fname = args[1];
 		
+		// -------------
 		perf_std_lined(fname, "char[]  stdio");
 		
 		// ubyteの列(バッファリング有り)をconst(char)[]のsliceで取る
@@ -17,7 +18,12 @@ void main(string[] args)
 		// ubyteの列をstringとみなしてLine分割する
 		perf_file_buffered_lined!(string)(fname, "string device");
 		
-	//	perf_sinfu_io(fname, "const(char)[]  sinfu");
+		//perf_sinfu_io(fname, "const(char)[]  sinfu");
+		// -------------
+		
+	//	foreach(line;lined!(const(dchar)[])(decoder(device.File(fname))))
+	//	{
+	//	}
 	}
 
 /+	foreach (char c; buffered(File(args[1])))
