@@ -20,16 +20,16 @@ void main(string[] args)
 		// -------------
 		perf_std_base64(fname, "std base64  ", std_print);
 		
-		//perf_dev_base64_chunk!(device.base64_0)(fname, "dev base64 0", dev_print);
+		//perf_dev_base64_chunk!(device_base64.base64_0)(fname, "dev base64 0", dev_print);
 		
-	//	perf_dev_base64!(device.base64_1)(fname, "dev base64 1", dev_print);
-	//	perf_dev_base64!(device.base64_2)(fname, "dev base64 2", dev_print);
-	//	perf_dev_base64!(device.base64_3)(fname, "dev base64 3", dev_print);
-	//	perf_dev_base64!(device.base64_4)(fname, "dev base64 4", dev_print);
+	//	perf_dev_base64!(device_base64.base64_1)(fname, "dev base64 1", dev_print);
+	//	perf_dev_base64!(device_base64.base64_2)(fname, "dev base64 2", dev_print);
+	//	perf_dev_base64!(device_base64.base64_3)(fname, "dev base64 3", dev_print);
+	//	perf_dev_base64!(device_base64.base64_4)(fname, "dev base64 4", dev_print);
 		
-		perf_dev_base64_chunk!(device.base64_4x)(fname, "dev base64 4x", dev_print);
+		perf_dev_base64_chunk!(device_base64.base64_4x)(fname, "dev base64 4x", dev_print);
 		
-	//	perf_dev_base64!(device.base64_4c)(fname, "dev base64 4c", dev_print);
+	//	perf_dev_base64!(device_base64.base64_4c)(fname, "dev base64 4c", dev_print);
 		// -------------
 /+
 Buffered!Fileのサイズを3の倍数にし、境界を合わせた上で
@@ -97,7 +97,7 @@ void perf_std_base64(string fname, string msg, bool p=false)
 	writefln("%24s : %10.0f characters/sec", msg, char_count / (1.e-6 * pc.microseconds));
 }
 
-import device;
+import device_base64;
 void perf_dev_base64(alias Base64)(string fname, string msg, bool p=false)
 {
 	static if (Print) if (p) writefln("----");
