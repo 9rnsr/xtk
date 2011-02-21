@@ -1003,7 +1003,7 @@ unittest
 			auto ln = e[0], line = e[1];
 			
 			assert(line == expects[ln],
-				std.string.format(
+				format(
 					"lined!%s(%s) failed : \n"
 					"[%s]\tline   = %s\n\texpect = %s",
 						Str2.stringof, Str1.stringof,
@@ -1041,15 +1041,12 @@ unittest
 		alias Unqual!(typeof(Str1.init[0])) Char1;
 		foreach (line; lined!Str2(decoder!Char1(data)))
 		{
-			// worksaround for std.string.format doesn't support formatting array.
-			string msg()
-			{
-				writefln("\n\t[%s] = \tline   = %(%02X %)\n\t\texpect = %(%02X %)",
-					ln, cast(ubyte[])line, cast(ubyte[])expect[ln]);
-				return std.string.format("%s -> lined!%s fails", Str1.stringof, Str2.stringof);
-			}
-			
-			assert(expect[ln] == line, msg());
+			assert(expect[ln] == line,
+				format(
+					"%s -> lined!%s fails\n"
+					"\t[%s] = \tline   = %(%02X %)\n\t\texpect = %(%02X %)",
+					Str1.stringof, Str2.stringof,
+					ln, cast(ubyte[])line, cast(ubyte[])expect[ln]));
 			++ln;
 		}
 		assert(ln == expect.length);
@@ -1161,4 +1158,17 @@ T move(T)(ref T src)
 template CharType(T) if (isSomeString!T)
 {
 	alias ForeachType!T CharType;
+}
+
+import std.format;
+string format(Char, A...)(in Char[] fmt, A args)
+{
+    auto writer = appender!string();
+    formattedWrite(writer, fmt, args);
+	return writer.data;
+}
+unittest
+{
+	auto s = format("%(%02X %)", [1,2,3]);
+	assert(s == "01 02 03");
 }
