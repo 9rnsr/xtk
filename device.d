@@ -907,42 +907,43 @@ unittest
 /**
 構築済みのInputをRangedで包むための補助関数
 */
-Ranged!Input ranged(Input)(Input input)
+Ranged!Device ranged(Device)(Device device)
 {
-	return Ranged!Input(move(input));
+	return Ranged!Device(move(device));
 }
 
 /**
-PoolをInputRangeに変換する
+PoolをInput/OutputRangeに変換する
 Design:
 	Rangeはコンストラクト直後にemptyが取れる、つまりPoolでいうfetch済みである必要があるが、
 	Poolは未fetchであることが必要なので互いの要件が矛盾する。よってPoolはInputRangeを
 	同時に提供できないため、これをWrapするRangedが必要となる。
 */
-struct Ranged(Input) if (isInputPool!Input)
+struct Ranged(Device) if (isInputPool!Device || isOutputPool!Device)
 {
 private:
-	Input input;
-	bool eof;
+	Device device;
+	bool eof = false;
 
 private:
-	this(T)(T i) if (is(T == Input))
+	this(T)(T i) if (is(T == Device))
 	{
-		move(i, input);
-		eof = !input.fetch();
+		move(i, device);
+	  static if (isInputPool!Device)
+		eof = !device.fetch();
 	}
 public:
 	/**
-	Inputにconstructionを委譲する
+	Deviceにconstructionを委譲する
 	Params:
-		args		= input constructor arguments
+		args		= device constructor arguments
 	*/
 	this(Args...)(Args args)
 	{
-		move(Input(args), input);
-		eof = !input.fetch();
+		__ctor(Device(args));
 	}
 
+  static if (isInputPool!Device)
 	/**
 	Interfaces of input range.
 	*/
@@ -951,23 +952,29 @@ public:
 		return eof;
 	}
 	
+  static if (isInputPool!Device)
 	/// ditto
 	@property ubyte front()
 	{
-		return input.available[0];
+		return device.available[0];
 	}
-/+	/// ditto
-	@property void front(ubyte e)
-	{
-		input.available[0] = e;
-	}+/
 	
+  static if (isInputPool!Device)
 	/// ditto
 	void popFront()
 	{
-		input.consume(1);
-		if (input.available.length == 0)
-			eof = !input.fetch();
+		device.consume(1);
+		if (device.available.length == 0)
+			eof = !device.fetch();
+	}
+
+  static if (isOutputPool!Device)
+	/**
+	Interface of output range.
+	*/
+	void put(ubyte[] data)
+	{
+		device.put(data);
 	}
 }
 
