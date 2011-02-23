@@ -469,7 +469,7 @@ struct BufferedSource(Input) if (isSource!Input)
 private:
 	Input input;
 	ubyte[] buffer;
-	ubyte[] view;	// Not yet popFront/pulled data view on buffer
+	size_t ava_start = 0, ava_end = 0;
 
 private:
 	this(T)(T i, size_t bufferSize) if (is(T == Input))
@@ -493,18 +493,25 @@ public:
 	Interfaces of InputPool.
 	*/
 	bool fetch()
-	in { assert(available.length == 0); }
 	body
 	{
-		view = buffer[0 .. $];
-		return input.pull(view);
-		//debug(Decoder) writefln("Buffered fetch, input.empty = %s", input.empty);
+		if (available.length == 0)
+		{
+			ava_start = ava_end = 0;
+		}
+		auto v = buffer[ava_end .. $];
+		auto result = input.pull(v);
+		if (result)
+		{
+			ava_end += v.length;
+		}
+		return result;
 	}
 	
 	/// ditto
 	@property const(ubyte)[] available() const
 	{
-		return view;
+		return buffer[ava_start .. ava_end];
 	}
 	
 	/// ditto
@@ -512,7 +519,7 @@ public:
 	in { assert(n <= available.length); }
 	body
 	{
-		view = view[n .. $];
+		ava_start += n;
 	}
 }
 unittest
@@ -528,14 +535,13 @@ struct BufferedSink(Output) if (isSink!Output)
 private:
 	Output output;
 	ubyte[] buffer;
-	size_t rsv_start, rsv_end;
+	size_t rsv_start = 0, rsv_end = 0;
 
 private:
 	this(T)(T o, size_t bufferSize) if (is(T == Output))
 	{
 		move(o, output);
 		buffer.length = bufferSize;
-		rsv_start = rsv_end = 0;
 	}
 public:
 	/**
@@ -619,23 +625,22 @@ unittest
 
 /**
 */
-struct BufferedDevice(Device) if (isDevice!Device)
+struct BufferedDevice(Device)
+	if (isDevice!Device)					// Bufferedの側でSource/Sink/Deviceを明示して区別する
+//	if (isSource!Device || isSink!Device)	// オリジナルのdeviceに応じて最大公約数のI/Fを提供する
 {
 private:
 	Device device;
 	ubyte[] buffer;
-	size_t rsv_start, rsv_end;
-	size_t ava_start, ava_end;
-	long base_pos;
+	static if (isSink  !Device) size_t rsv_start = 0, rsv_end = 0;
+	static if (isSource!Device) size_t ava_start = 0, ava_end = 0;
+	static if (isDevice!Device) long base_pos = 0;
 
 private:
 	this(T)(T d, size_t bufferSize) if (is(T == Device))
 	{
 		move(d, device);
 		buffer.length = bufferSize;
-		rsv_start = rsv_end = 0;
-		ava_start = ava_end = 0;
-		base_pos = 0;
 	}
 public:
 	/**
@@ -648,27 +653,37 @@ public:
 	{
 		__ctor(Device(args), bufferSize);
 	}
+	
+  static if (isSink!Device)
 	~this()
 	{
 		while (reserves.length > 0)
 			flush();
 	}
 
+  static if (isSource!Device)
 	/**
 	Interfaces of InputPool.
 	*/
 	bool fetch()
-//	in { assert(available.length == 0); }	// diff from BufferedSource
 	body
 	{
-		if (reserves.length == 0 && available.length == 0)
+	  static if (isDevice!Device)
+		bool empty_reserves = (reserves.length == 0);
+	  else
+		enum empty_reserves = true;
+		
+		if (empty_reserves && available.length == 0)
 		{
-			base_pos += ava_end;
-			ava_start = ava_end = 0;
-			rsv_start = rsv_end = 0;
+			static if (isDevice!Device)	base_pos += ava_end;
+			static if (isDevice!Device)	rsv_start = rsv_end = 0;
+										ava_start = ava_end = 0;
 		}
-		auto v = buffer[ava_end .. $];
+		
+	  static if (isDevice!Device)
 		device.seek(base_pos + ava_end, SeekPos.Set);
+		
+		auto v = buffer[ava_end .. $];
 		auto result =  device.pull(v);
 		if (result)
 		{
@@ -677,12 +692,14 @@ public:
 		return result;
 	}
 	
+  static if (isSource!Device)
 	/// ditto
 	@property const(ubyte)[] available() const
 	{
-		return buffer[rsv_end .. ava_end];
+		return buffer[ava_start .. ava_end];
 	}
 	
+  static if (isSource!Device)
 	/// ditto
 	void consume(size_t n)
 	in { assert(n <= available.length); }
@@ -691,48 +708,72 @@ public:
 		ava_start += n;
 	}
 
+  static if (isSink!Device)
 	/**
 	Interfaces of OutputPool.
 	*/
 	@property ubyte[] usable()
 	{
+	  static if (isDevice!Device)
 		return buffer[ava_start .. $];
+	  else
+		return buffer[rsv_end .. $];
 	}
+  static if (isSink!Device)
 	private @property const(ubyte)[] reserves()
 	{
 		return buffer[rsv_start .. rsv_end];
 	}
 	
+  static if (isSink!Device)
 	/// ditto
 	void commit(size_t n)
 	{
+	  static if (isDevice!Device)
+	  {
 		assert(ava_start + n <= buffer.length);
 		ava_start += n;
 		ava_end = max(ava_end, ava_start);
 		rsv_end = ava_start;
+	  }
+	  else
+	  {
+		assert(rsv_end + n <= buffer.length);
+		rsv_end += n;
+	  }
 	}
 	
+  static if (isSink!Device)
 	/// ditto
 	bool flush()
 	in { assert(reserves.length > 0); }
 	body
 	{
-		auto rsv = buffer[rsv_start .. rsv_end];
+	  static if (isDevice!Device)
 		device.seek(base_pos + rsv_start, SeekPos.Set);
+		
+		auto rsv = buffer[rsv_start .. rsv_end];
 		auto result = device.push(rsv);
 		if (result)
 		{
 			rsv_start = rsv_end - rsv.length;
-			if (reserves.length == 0 && available.length == 0)
+			
+		  static if (isDevice!Device)
+			bool empty_available = (available.length == 0);
+		  else
+			enum empty_available = true;
+			
+			if (reserves.length == 0 && empty_available)
 			{
-				base_pos += ava_end;
-				ava_start = ava_end = 0;
-				rsv_start = rsv_end = 0;
+				static if (isDevice!Device)	base_pos += ava_end;
+				static if (isDevice!Device)	ava_start = ava_end = 0;
+											rsv_start = rsv_end = 0;
 			}
 		}
 		return result;
 	}
 
+  static if (isSink!Device)
 	/**
 		OutputRange I/F
 	*/
