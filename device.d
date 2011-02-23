@@ -14,8 +14,8 @@ version = MeasPerf;
 version (MeasPerf)
 {
 	import std.perf, std.file;
-	version = MeasPerf_BufferedSink;
-	version = MeasPerf_Lined;
+	version = MeasPerf_LinedIn;
+	version = MeasPerf_BufferdOut;
 }
 
 /*
@@ -446,7 +446,7 @@ Buffered!Device buffered(Device)(Device dev, size_t bufferSize = 2048)
 }
 
 /**
-	todo
+Implementation selector
 */
 template Buffered(T)
 {
@@ -571,10 +571,11 @@ public:
 		auto result = output.push(rsv);
 		if (result)
 		{
-			if (rsv.length == 0)
+			rsv_start = rsv_end - rsv.length;
+			if (reserves.length == 0)
+			{
 				rsv_start = rsv_end = 0;
-			else
-				rsv_start = rsv_end - rsv.length;
+			}
 		}
 		return result;
 	}
@@ -647,6 +648,138 @@ unittest
 	}
 }+/
 
+/**
+*/
+struct BufferedDevice(Device) if (isDevice!Device)
+{
+private:
+	Device device;
+	ubyte[] buffer;
+	size_t rsv_start, rsv_end;
+	size_t avail_start, avail_end;
+	long base_pos;
+
+private:
+	this(T)(T d, size_t bufferSize) if (is(T == Device))
+	{
+		move(d, device);
+		buffer.length = bufferSize;
+		rsv_start = rsv_end = 0;
+		avail_start = avail_end = 0;
+		base_pos = 0;
+	}
+public:
+	this(Args...)(Args args, size_t bufferSize)
+	{
+		__ctor(Device(args), bufferSize);
+	}
+	~this()
+	{
+		while (reserves.length > 0)
+			flush();
+	}
+
+	/**
+	Interfaces of InputPool.
+	*/
+	bool fetch()
+//	in { assert(available.length == 0); }	// diff from BufferedSource
+	body
+	{
+		if (reserves.length == 0 && available.length == 0)
+		{
+			base_pos += avail_end;
+			avail_start = avail_end = 0;
+			rsv_start = rsv_end = 0;
+		}
+		auto v = buffer[avail_end .. $];
+		device.seek(base_pos + avail_end, SeekPos.Set);
+		auto result =  device.pull(v);
+		if (result)
+		{
+			avail_end += v.length;
+		}
+		return result;
+	}
+	
+	/// ditto
+	@property const(ubyte)[] available() const
+	{
+		return buffer[rsv_end .. avail_end];
+	}
+	
+	/// ditto
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		avail_start += n;
+	}
+
+	/**
+	Interfaces of OutputPool.
+	*/
+	@property ubyte[] usable()
+	{
+		return buffer[avail_start .. $];
+	}
+	private @property const(ubyte)[] reserves()
+	{
+		return buffer[rsv_start .. rsv_end];
+	}
+	
+	void commit(size_t n)
+	{
+		assert(avail_start + n <= buffer.length);
+		avail_start += n;
+		avail_end = max(avail_end, avail_start);
+		rsv_end = avail_start;
+	}
+	
+	bool flush()
+	in { assert(reserves.length > 0); }
+	body
+	{
+		auto rsv = buffer[rsv_start .. rsv_end];
+		device.seek(base_pos + rsv_start, SeekPos.Set);
+		auto result = device.push(rsv);
+		if (result)
+		{
+			rsv_start = rsv_end - rsv.length;
+			if (reserves.length == 0 && available.length == 0)
+			{
+				base_pos += avail_end;
+				avail_start = avail_end = 0;
+				rsv_start = rsv_end = 0;
+			}
+		}
+		return result;
+	}
+
+	/**
+		OutputRange I/F
+	*/
+	void put(ubyte[] data)
+	out {assert(usable.length > 0); }
+	body
+	{
+		while (data.length > 0)
+		{
+			if (usable.length == 0)
+				flush();
+			auto len = min(data.length, usable.length);
+			usable[0 .. len] = data[0 .. len];
+			data = data[len .. $];
+			commit(len);
+		}
+		if (usable.length == 0)
+			flush();
+	}
+}
+unittest
+{
+	//assert(0);	// todo
+}
 
 /// ditto
 struct BufferedSource(Input) if (isArray!Input)
@@ -1479,53 +1612,12 @@ void main()
 {
   version (MeasPerf)
   {
-	version (MeasPerf_BufferedSink)	doMeasPerf_BufferedSink();
-	version (MeasPerf_Lined)		doMeasPerf_Lined();
+	version (MeasPerf_LinedIn)		doMeasPerf_LinedIn();
+	version (MeasPerf_BufferdOut)	doMeasPerf_BufferdOut();
   }
 }
 
-void doMeasPerf_BufferedSink()
-{
-	enum RemoveFile = true;
-	size_t nlines = 100000;
-//	auto data = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n";
-	auto data = "1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\r\n";
-	
-	void test_std_out(string fname, string msg)
-	{
-		auto pc = new PerformanceCounter;
-		pc.start;
-		{	auto f = std.stdio.File(fname, "wb");
-			foreach (i; 0 .. nlines)
-			{
-				f.write(data);
-			}
-		}pc.stop;
-		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
-		static if (RemoveFile) std.file.remove(fname);
-	}
-	void test_dev_out(string fname, string msg)
-	{
-		auto bytedata = cast(ubyte[])data;
-		
-		auto pc = new PerformanceCounter;
-		pc.start;
-		{	auto f = BufferedSink!(device.File)(fname, "w", 2048);
-			foreach (i; 0 .. nlines)
-			{
-				f.put(bytedata);
-			}
-		}pc.stop;
-		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
-		static if (RemoveFile) std.file.remove(fname);
-	}
-
-	writefln("BufferedSink!File performance measurement:");
-	test_std_out("out_test1.txt", "std out");
-	test_dev_out("out_test2.txt", "dev out");
-}
-
-void doMeasPerf_Lined()
+void doMeasPerf_LinedIn()
 {
 	void test_file_buffered_lined(String)(string fname, string msg)
 	{
@@ -1573,4 +1665,46 @@ void doMeasPerf_Lined()
 	test_std_lined							(fname,        "char[] std in ");
 	test_file_buffered_lined!(const(char)[])(fname, "const(char)[] dev in ");	// sliceed line
 	test_file_buffered_lined!(string)		(fname,        "string dev in ");	// idup-ed line
+}
+
+void doMeasPerf_BufferdOut()
+{
+	enum RemoveFile = true;
+	size_t nlines = 100000;
+//	auto data = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n";
+	auto data = "1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\r\n";
+	
+	void test_std_out(string fname, string msg)
+	{
+		auto pc = new PerformanceCounter;
+		pc.start;
+		{	auto f = std.stdio.File(fname, "wb");
+			foreach (i; 0 .. nlines)
+			{
+				f.write(data);
+			}
+		}pc.stop;
+		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+		static if (RemoveFile) std.file.remove(fname);
+	}
+	void test_dev_out(alias Buffered)(string fname, string msg)
+	{
+		auto bytedata = cast(ubyte[])data;
+		
+		auto pc = new PerformanceCounter;
+		pc.start;
+		{	auto f = Buffered!(device.File)(fname, "w", 2048);
+			foreach (i; 0 .. nlines)
+			{
+				f.put(bytedata);
+			}
+		}pc.stop;
+		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+		static if (RemoveFile) std.file.remove(fname);
+	}
+
+	writefln("BufferedSink/Device!File performance measurement:");
+	test_std_out                 ("out_test1.txt",        "std out");
+	test_dev_out!(BufferedSink)  ("out_test2.txt", "  sink dev out");
+	test_dev_out!(BufferedDevice)("out_test3.txt", "device dev out");
 }
