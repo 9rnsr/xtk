@@ -110,7 +110,7 @@ template isSource(S)
 	}()));
 }
 
-/*
+/**
 Returns $(D true) if $(D S) is a $(I sink). A Source must define the
 primitive $(D push). 
 */
@@ -126,7 +126,7 @@ template isSink(S)
 	}()));
 }
 
-/*
+/**
 	Device supports both operations of source and sink.
 */
 template isDevice(S)
@@ -479,8 +479,8 @@ private:
 	}
 public:
 	/**
-	Params:
 	Inputにconstructionを委譲する
+	Params:
 		args		= input constructor arguments
 		bufferSize	= バッファリングされる要素数
 	*/
@@ -490,7 +490,7 @@ public:
 	}
 
 	/**
-	Interfaces of pool.
+	Interfaces of InputPool.
 	*/
 	bool fetch()
 	in { assert(available.length == 0); }
@@ -538,6 +538,12 @@ private:
 		rsv_start = rsv_end = 0;
 	}
 public:
+	/**
+	Outputにconstructionを委譲する
+	Params:
+		args		= output constructor arguments
+		bufferSize	= バッファリングされる要素数
+	*/
 	this(Args...)(Args args, size_t bufferSize)
 	{
 		__ctor(Output(args), bufferSize);
@@ -548,6 +554,9 @@ public:
 			flush();
 	}
 	
+	/**
+	Interfaces of OutputPool.
+	*/
 	@property ubyte[] usable()
 	{
 		return buffer[rsv_end .. $];
@@ -557,12 +566,14 @@ public:
 		return buffer[rsv_start .. rsv_end];
 	}
 	
+	/// ditto
 	void commit(size_t n)
 	{
 		assert(rsv_end + n <= buffer.length);
 		rsv_end += n;
 	}
 	
+	/// ditto
 	bool flush()
 	in { assert(reserves.length > 0); }
 	body
@@ -605,48 +616,6 @@ unittest
 	static assert(isOutputPool!(BufferedSink!File));
 	//assert(0);	// todo
 }
-/+unittest
-{
-	// planned user code
-	
-//	f = Buffered!File("out_test.txt");
-//	f.
-	
-	/*{
-		auto f = File("out_test.txt", "w+");
-		foreach (c; 'A' .. 'Z'+1)
-		{
-			ubyte[2] buf;
-			const(ubyte)[] pbuf;
-			
-			buf[0] = cast(ubyte)c, pbuf = buf[0..1];
-			f.push(pbuf);
-			if (c == 'Z')
-			{
-				buf[0] = '\r', pbuf = buf[0..1];
-				f.push(pbuf);
-				buf[0] = '\n', pbuf = buf[0..1];
-				f.push(pbuf);
-			}
-		}
-	}*/
-
-	{
-		auto f = BufferedSink!File("out_test.txt", "w", 2048);
-		auto data = cast(ubyte[])"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-	  version(all)
-	  {
-		f.put(data);
-	  }else{
-		auto r = f.usable;
-		put(r, data);
-		//writefln("f.available = [%(%02X %)]", f.available);
-		f.commit(data.length);
-		//writefln("f.available = [%(%02X %)]", f.available);
-		f.flush();
-	  }
-	}
-}+/
 
 /**
 */
@@ -656,7 +625,7 @@ private:
 	Device device;
 	ubyte[] buffer;
 	size_t rsv_start, rsv_end;
-	size_t avail_start, avail_end;
+	size_t ava_start, ava_end;
 	long base_pos;
 
 private:
@@ -665,10 +634,16 @@ private:
 		move(d, device);
 		buffer.length = bufferSize;
 		rsv_start = rsv_end = 0;
-		avail_start = avail_end = 0;
+		ava_start = ava_end = 0;
 		base_pos = 0;
 	}
 public:
+	/**
+	Deviceにconstructionを委譲する
+	Params:
+		args		= device constructor arguments
+		bufferSize	= バッファリングされる要素数
+	*/
 	this(Args...)(Args args, size_t bufferSize)
 	{
 		__ctor(Device(args), bufferSize);
@@ -688,16 +663,16 @@ public:
 	{
 		if (reserves.length == 0 && available.length == 0)
 		{
-			base_pos += avail_end;
-			avail_start = avail_end = 0;
+			base_pos += ava_end;
+			ava_start = ava_end = 0;
 			rsv_start = rsv_end = 0;
 		}
-		auto v = buffer[avail_end .. $];
-		device.seek(base_pos + avail_end, SeekPos.Set);
+		auto v = buffer[ava_end .. $];
+		device.seek(base_pos + ava_end, SeekPos.Set);
 		auto result =  device.pull(v);
 		if (result)
 		{
-			avail_end += v.length;
+			ava_end += v.length;
 		}
 		return result;
 	}
@@ -705,7 +680,7 @@ public:
 	/// ditto
 	@property const(ubyte)[] available() const
 	{
-		return buffer[rsv_end .. avail_end];
+		return buffer[rsv_end .. ava_end];
 	}
 	
 	/// ditto
@@ -713,7 +688,7 @@ public:
 	in { assert(n <= available.length); }
 	body
 	{
-		avail_start += n;
+		ava_start += n;
 	}
 
 	/**
@@ -721,21 +696,23 @@ public:
 	*/
 	@property ubyte[] usable()
 	{
-		return buffer[avail_start .. $];
+		return buffer[ava_start .. $];
 	}
 	private @property const(ubyte)[] reserves()
 	{
 		return buffer[rsv_start .. rsv_end];
 	}
 	
+	/// ditto
 	void commit(size_t n)
 	{
-		assert(avail_start + n <= buffer.length);
-		avail_start += n;
-		avail_end = max(avail_end, avail_start);
-		rsv_end = avail_start;
+		assert(ava_start + n <= buffer.length);
+		ava_start += n;
+		ava_end = max(ava_end, ava_start);
+		rsv_end = ava_start;
 	}
 	
+	/// ditto
 	bool flush()
 	in { assert(reserves.length > 0); }
 	body
@@ -748,8 +725,8 @@ public:
 			rsv_start = rsv_end - rsv.length;
 			if (reserves.length == 0 && available.length == 0)
 			{
-				base_pos += avail_end;
-				avail_start = avail_end = 0;
+				base_pos += ava_end;
+				ava_start = ava_end = 0;
 				rsv_start = rsv_end = 0;
 			}
 		}
@@ -781,7 +758,7 @@ unittest
 	//assert(0);	// todo
 }
 
-/// ditto
+/+/// ditto
 struct BufferedSource(Input) if (isArray!Input)
 {
 private:
@@ -827,9 +804,9 @@ public:
 unittest
 {
 	//assert(0);	// todo
-}
+}+/
 
-/// ditto
+/+/// ditto
 struct BufferedSource(Input) if (!isArray!Input && isInputRange!Input)
 {
 private:
@@ -884,7 +861,7 @@ public:
 unittest
 {
 	//assert(0);	// todo
-}
+}+/
 
 /**
 構築済みのInputをRangedで包むための補助関数
