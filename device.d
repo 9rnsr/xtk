@@ -1,93 +1,188 @@
 ﻿/**
-	定義
-	Source/Sinkの基本要素はubyteである
 */
 //module std.device;
+module device;
+
 import std.array, std.algorithm, std.range, std.traits;
+import std.stdio;
 version(Windows)
 {
 	import core.sys.windows.windows;
 }
 
-//debug = Move;
-
-import std.stdio;
-import std.perf;
-void main(string[] args)
+version = MeasPerf;
+version (MeasPerf)
 {
-	if (args.length == 2)
-	{
-
-	/+	foreach (char c; buffered(File(args[1])))
-		{
-			if (c != '\r') write(c);
-		}	// +/
-		
-		auto pc = new PerformanceCounter;
-		pc.start;
-		
-		size_t nlines = 0;
-	//	//バイト列をchar列のバイト表現とみなし、decoder!dcharでcharのRangeに変換する
-	//	foreach (line; lined!string(decoder!char(buffered(File(args[1])))))
-		
-		foreach (i; 0 .. 1000)
-		{
-			// ubyteの列をstringとみなしてLine分割する
-		//	foreach (line; lined!string(buffered(File(args[1]), 2048)))
-		
-			// ubyteの列(バッファリング有り)をconst(char)[]のsliceで取る
-			foreach (line; lined!(const(char)[])(buffered(File(args[1]), 2048)))
-			{
-				line.dup, ++nlines;
-			}
-			//assert(0);
-		}
-		pc.stop;
-		
-		printf("%g line/sec\n", nlines / (1.e-6 * pc.microseconds));
-	}
+	import std.perf, std.file;
+	version = MeasPerf_LinedIn;
+	version = MeasPerf_BufferdOut;
 }
 
-
 /*
-	Check that S is source.	(exact)
-	Source supports empty and pull operation.
+	std.file.File.ByChunkの問題点：
+		ubyte[]のレンジである
+		説明：
+			Fileは論理的にはubyteのストリームであるが、
+			レンジを使用する側(bLineやalgorithmなど)はbyChunkを考慮するために
+			ubyte[]のレンジを特別扱いしなくてはならない
+		結論：
+			バッファリングされたストリームは、バッファにアクセスするための
+			IFを別途必要とする。Range I/Fではこれは満たせない。
+
+	The problem of std.file.File.ByChunk is that ElementType!ByChunk is ubyte[].
+	This means that ByChunk is range of ubyte[], but File is stream of ubyte.
+	Then, wrapper ranges using ByChunk as original range (e.g. byLine) 
+	should have special case. This is bad design.
+	
+	Filters buffering data from original source(e.g. File) should different
+	interface with neither File or Range, I call it Pool.
+	
+	This module defines two interface to read, Source and Pool.
+	- Source is pulled data specificated N length by user of source.
+	- Pool is referenced already cached data by user of pool.
+	Normally pools wrap a source or other pools, and provide range interface if it can.
+	
+	Decoder
+		Conversion filter.
+		When input is a pool of dchar, Decoder can become slicing filter.
+	Lined
+		if string type is const(char)[], lines that enumerated with range I/F will be
+		slices of input pool as can as possilble.
+		Slicing filter.
+	
+	Pool has an array of data it caches, and you can see it through its property $(D available).
+	Users of pool can reduce the cost of copying by getting slices of it.
+	
+	On the other hand, Source does'nt have cached data in itself.
+	Pools that take Source as input may ...
+	
+	
+*/
+
+/**
+Returns $(D true) if $(D S) is a $(I source). A Source must define the
+primitive $(D pull). The following code should compile for any source.
+$(D S)が$(I Source)の場合に$(D true)を返す。$(BR)
+
+----
+Source s;                   // when s is source, it
+ubyte[] buf;                // can read ubyte[] data into buffer
+bool empty = s.pull(buf);   // can check source was already empty
+----
+
+Basic element of source is ubyte.
+
+The operations of $(I Source):$(BR)
+$(I Source)の操作:$(BR)
+$(DDOC_MEMBERS
+$(DDOC_DECL bool pull(ref ubyte[] buf))
+$(DDOC_DECL_DD
+	This operation read data from source into $(D buf).$(BR)
+	この操作はsourceからデータを読み出し、$(D buf)に格納する。$(BR)
+	
+	If $(D buf.length) is 0, then you can check only source is valid.$(BR)
+	$(D buf.length)が0の場合、sourceが読み出し可能状態であるかのみをチェックできる。$(BR)
+	
+	$(DDOC_SECTION_H InAssertion:$(BR)In契約:)
+	$(DDOC_SECTION
+	source is not yet $(D pull)ed, or previous $(D pull) operation returns $(D true).$(BR)
+	sourceはまだ$(D pull)されたことがないか、あるいは前回の$(D pull)操作で$(D true)を返している。$(BR)
+	)
+	
+	$(DDOC_SECTION_H Returns:$(BR)返値:)
+	$(DDOC_SECTION
+	If source was valid before reading, $(D buf) filled the read data(its length >= 0) and returns $(D true).$(BR)
+	読み出し前にsourceが有効な状態だった場合、$(D buf)を読み出したデータで埋め、$(D true)を返す。$(BR)
+	Otherwise returns $(D false).$(BR)
+	そうでない場合、$(D false)を返す。$(BR)
+	)
+))
 */
 template isSource(S)
 {
 	enum isSource = is(typeof({
-		void dummy(ref S s)
+		S s;
+		ubyte[] buf;
+		while(s.pull(buf))
 		{
-			if (s.empty){}
-			ubyte[] buf;
-			size_t len = 0;
-			const(ubyte)[] data = s.pull(len, buf);
-		}
+			// ...
+		} 
 	}()));
 }
 
-/*
-	Check that S is sink.
-	Sink supports empty(?) and push operation.
+/**
+Returns $(D true) if $(D S) is a $(I sink). A Source must define the
+primitive $(D push). 
 */
-template isSink(T)
+template isSink(S)
 {
 	enum isSink = is(typeof({
-		void dummy(ref S s)
+		S s;
+		const(ubyte)[] buf;
+		do
 		{
-			if (s.empty){}	//?
-			const(ubyte)[] buf;
-			if (push(s, buf)) {}
-		}
+			// ...
+		}while (s.push(buf))
 	}()));
 }
 
-/*
+/**
 	Device supports both operations of source and sink.
 */
 template isDevice(S)
 {
 	enum isDevice = isSource!S && isSink!S;
+}
+
+/**
+
+In definition, initial state of pool has 0 length $(D available).$(BR)
+定義では、poolの初期状態は長さ0の$(D available)を持つ。$(BR)
+You can assume that pool is not $(D fetch)-ed yet.$(BR)
+これはpoolがまだ一度も$(D fetch)されたことがないと見なすことができる。$(BR)
+
+Basic element of sink is ubyte.
+
+*/
+template isInputPool(S)
+{
+	enum isInputPool = is(typeof({
+		S s;
+		while (s.fetch())
+		{
+			auto buf = s.available;
+			size_t n;
+			s.consume(n);
+		}
+	}()));
+}
+
+/**
+*/
+template isOutputPool(S)
+{
+	enum isOutputPool = is(typeof({
+		S s;
+		do
+		{
+			auto buf = s.usable;
+			size_t n;
+			s.commit(n);
+		}while (s.flush())
+	}()));
+}
+
+/**
+*/
+template PoolElementType(S)
+{
+//	  static if (isDevice)
+//		static assert(is(S.init.available[0] == s.init.usable[0]));
+
+	static if (isInputPool!S)
+		alias typeof(S.init.available[0]) PoolElementType;
+	static if (isOutputPool!S)
+		alias typeof(S.init.usable[0]) PoolElementType;
 }
 
 // seek whence...
@@ -97,7 +192,7 @@ enum SeekPos {
 	End
 }
 
-/*
+/+/*
 	Check that S is seekable source or sink.
 	Seekable source/sink supports seek operation.
 */
@@ -109,139 +204,10 @@ template isSeekable(S)
 			s.seek(0, SeekPos.Set);
 		}
 	}()));
-}
+}+/
 
 
-/*
-	sからlenバイトを読み出し、bufへ格納する
-	→	1.callerから与えられたバッファを埋める
-		2.calleeでバッファを確保し、Viewを返す
-*/
-const(ubyte)[] pull(S)(ref S s, size_t len, ubyte[] buf=null)
-{
-	static if (hasMember!(S, "pull") && is(typeof(s.pull(len, buf))))
-	{
-		return s.pull(len, buf);
-	}
-//	else static if (hasSlicing!S && hasLength!S)
-//	{
-//		//todo
-//	}
-	else static if (isInputRange!S)
-	{
-		// todo バイト列とオブジェクト型の変換(serialization)はどうする？
-		static assert(is(ElementType!S : const(ubyte)));
-		
-		if (buf.length > 0)
-			len = min(buf.length, len);
-		else
-			buf.length = len;
-		
-		auto outbuf = buf[0 .. len];
-		
-		// rangeをSourceとして扱う場合はすべてputに任せる
-		//writefln("S == %s, outbuf.length == %s, s.length == %s", S.stringof, outbuf.length, s.length);
-		
-	//	put(outbuf, s);
-		// outbufを埋め尽くすか、sが空になるまでputする
-		// std.range.putはsからすべて吐き出せない場合にbreakしてくれない
-		for (; !s.empty && !outbuf.empty; s.popFront())
-		{
-			put(outbuf, s.front);
-		}
-		
-		return buf[0 .. $-outbuf.length];
-	}
-	else
-	{
-		static assert(0, S.stringof~" does not support pull operation");
-	}
-}
-unittest
-{
-	ubyte[] arr = [1,2,3];
-	ubyte[] src = arr;
-	const(ubyte)[] buf = src.pull(2);
-	assert(src == [3]);
-	assert(buf == [1,2]);
-	
-	struct ByteRange
-	{
-		ubyte[] arr;
-		@property bool empty() const{ return arr.length == 0; }
-		@property ref ubyte front()	{ return arr[0]; }
-		void popFront()				{ arr = arr[1 .. $]; }
-	}
-	auto r = ByteRange(arr);
-	buf = .pull(r, 2);
-	assert(array(r) == [3]);
-	assert(buf == [1, 2]);
-}
-
-/**
-	sourceの終端に達するか、もしくは正しくlenバイトのデータをpullする
-*/
-const(ubyte)[] pullExact(S)(ref S s, size_t len, ubyte[] buf=null)
-out(data)
-{
-	assert(s.empty || data.length == len);
-}
-body
-{
-	//debug(Decoder) writefln("pullExact len = %s", len);
-
-	if (buf.length > 0)
-		len = min(buf.length, len);
-	else
-		buf.length = len;	// allocation
-	
-	auto data = .pull(s, len, buf);
-	if (data.length < len)
-	{
-		auto rem = buf[data.length .. $];
-		while (!s.empty && rem.length > 0)
-		{
-			data = .pull(s, rem.length, rem);
-			rem = rem[data.length .. $];
-		}
-		//data = buf[0 .. $ - rem.length];
-		//debug(Decoder) writefln("pullExact rem.length = %s, s.empty = %s", rem.length, s.empty);
-		if (rem.length > 0)
-			throw new /*Read*/Exception("not enough data in stream");	// from std.stream.readExact
-	}
-	//return data;
-	return buf;
-}
-unittest
-{
-}
-
-/**
-	引数bufのslicingと、返値の2方向で処理後の状態を返している
-	→あんまりよくないデザインかな…
-	
-*/
-bool push(S)(ref S s, ref const(ubyte)[] buf)
-{
-	static if (isOutputRange!S)
-	{
-		// todo バイト列とオブジェクト型の変換(serialization)はどうする？
-		static assert(is(ElementType!S : ubyte));
-		
-		//rangeをsinkとして扱う場合は、putにすべてを任せる
-		put(s, buf);
-		return buf.length > 0 || !s.empty;
-	}
-	else static if (is(typeof(s.push(buf))))
-	{
-		return s.push(buf);
-	}
-	else
-	{
-		static assert(0, S.stringof~" does not support push operation");
-	}
-}
-
+/+
 /**
 	RがRandomAccessRangeでない場合、Cur + |offset|以外の操作がO(n)となる
 	→isRandomAccessRange!R を要件とする (いろいろ考えたが、おそらくこれが妥当と思われる)
@@ -317,14 +283,11 @@ struct Seekable(R)
 				view = orig[$ .. $];
 		}
 	}
-}
+}+/
 
 
 /**
-	バッファのアロケーションについては消極的
-	
 	File is Seekable Device
-	pure Device (doesn't have Range I/F)
 */
 struct File
 {
@@ -333,221 +296,740 @@ struct File
 private:
 	HANDLE hFile;
 	size_t* pRefCounter;
-	bool eof = false;
 
 public:
-	this(string fname)
+	/**
+	*/
+	this(string fname, in char[] mode = "r")
 	{
-	//	writefln(typeof(this).stringof ~ " ctor");
-		
 		int share = FILE_SHARE_READ | FILE_SHARE_WRITE;
-		int access = GENERIC_READ;
-		int createMode = OPEN_EXISTING;
+		int access = void;
+		int createMode = void;
+		
+		// fopenにはOPEN_ALWAYSに相当するModeはない？
+		switch (mode)
+		{
+			case "r":
+				access = GENERIC_READ;
+				createMode = OPEN_EXISTING;
+				break;
+			case "w":
+				access = GENERIC_WRITE;
+				createMode = CREATE_ALWAYS;
+				break;
+			case "a":
+				assert(0);
+			
+			case "r+":
+				access = GENERIC_READ | GENERIC_WRITE;
+				createMode = OPEN_EXISTING;
+				break;
+			case "w+":
+				access = GENERIC_READ | GENERIC_WRITE;
+				createMode = CREATE_ALWAYS;
+				break;
+			case "a+":
+				assert(0);
+			
+			// do not have binary mode(binary access only)
+		//	case "rb":
+		//	case "wb":
+		//	case "ab":
+		//	case "rb+":	case "r+b":
+		//	case "wb+":	case "w+b":
+		//	case "ab+":	case "a+b":
+		}
+		
 		hFile = CreateFileW(
 			std.utf.toUTF16z(fname), access, share, null, createMode, 0, null);
 		pRefCounter = new size_t();
 		*pRefCounter = 1;
-		debug(Move) writefln("ctor   this=%08s, hFile=%08s, cnt=%s",
-			&this, cast(uint)hFile, pRefCounter ? *pRefCounter : 0);
 	}
 	this(this)
 	{
 		if (pRefCounter) ++(*pRefCounter);
-		debug(Move) writefln("cpctor this=%08s, hFile=%08s, cnt=%s",
-			&this, cast(uint)hFile, pRefCounter ? *pRefCounter : 0);
 	}
 	~this()
 	{
-		debug(Move) writefln("dtor   this=%08s, hFile=%08s, cnt=%s",
-			&this, cast(uint)hFile, pRefCounter ? *pRefCounter : 0);
 		if (pRefCounter)
 		{
 			if (--(*pRefCounter) == 0)
 			{
-				debug(Move) writefln("%s", typeof(this).stringof ~ " dtor");
-				delete pRefCounter;
+				//delete pRefCounter;	// trivial: delegate management to GC.
 				CloseHandle(cast(HANDLE)hFile);
 			}
-			pRefCounter = null;
+			//pRefCounter = null;		// trivial: do not need
 		}
 	}
 
+	/**
+	Request n number of elements.
+	Returns:
+		$(UL
+			$(LI $(D true ) : You can request next pull.)
+			$(LI $(D false) : No element exists.))
+	*/
+	bool pull(ref ubyte[] buf)
+	{
+		DWORD size = void;
+		debug writefln("ReadFile : buf.ptr=%08X, len=%s", cast(uint)buf.ptr, len);
+		if (ReadFile(hFile, buf.ptr, buf.length, &size, null))
+		{
+			debug(File)
+				writefln("pull ok : hFile=%08X, buf.length=%s, size=%s, GetLastError()=%s",
+					cast(uint)hFile, buf.length, size, GetLastError());
+			buf = buf[0 .. size];
+			return (size > 0);	// valid on only blocking read
+		}
+		else
+		{
+			debug(File)
+				writefln("pull ng : hFile=%08X, size=%s, GetLastError()=%s",
+					cast(uint)hFile, size, GetLastError());
+			throw new Exception("pull(ref buf[]) error");
+			
+		//	// for overlapped I/O
+		//	eof = (GetLastError() == ERROR_HANDLE_EOF);
+		}
+	}
+
+	/**
+	*/
+	bool push(ref const(ubyte)[] buf)
+	{
+		DWORD size = void;
+		if (WriteFile(hFile, buf.ptr, buf.length, &size, null))
+		{
+			buf = buf[size .. $];
+			return true;	// (size == buf.length);
+		}
+		else
+		{
+			throw new Exception("push error");	//?
+	}
+	}
+	
+	ulong seek(long offset, SeekPos whence)
+	{
+	  version(Windows)
+	  {
+		int hi = cast(int)(offset>>32);
+		uint low = SetFilePointer(hFile, cast(int)offset, &hi, whence);
+		if ((low == INVALID_SET_FILE_POINTER) && (GetLastError() != 0))
+			throw new /*Seek*/Exception("unable to move file pointer");
+		ulong result = (cast(ulong)hi << 32) + low;
+	  }
+	  else
+	  version (Posix)
+	  {
+		auto result = lseek(hFile, cast(int)offset, whence);
+		if (result == cast(typeof(result))-1)
+			throw new /*Seek*/Exception("unable to move file pointer");
+	  }
+		return cast(ulong)result;
+	}
+}
+unittest
+{
+	static assert(isSource!File);
+	static assert(isSink!File);
+	static assert(isDevice!File);
+	//assert(0);	// todo
+}
+
+/**
+構築済みのInputをBufferedで包むための補助関数
+*/
+Buffered!Device buffered(Device)(Device dev, size_t bufferSize = 2048)
+{
+	return Buffered!Device(move(dev), bufferSize);
+}
+
+/**
+Implementation selector
+*/
+template Buffered(T)
+{
+	static if (isDevice!T)
+		alias BufferedDevice!T Buffered;
+	else
+	{
+		static if (isSource!T)
+			alias BufferedSource!T Buffered;
+		static if (isSink!T)
+			alias BufferedSink!T Buffered;
+	}
+}
+
+/**
+InputとしてSource/配列/InputRangeを取り、ubyteのPool I/Fを提供する
+*/
+struct BufferedSource(Input) if (isSource!Input)
+{
+private:
+	Input input;
+	ubyte[] buffer;
+	size_t ava_start = 0, ava_end = 0;
+
+private:
+	this(T)(T i, size_t bufferSize) if (is(T == Input))
+	{
+		move(i, input);
+		buffer.length = bufferSize;
+	}
+public:
+	/**
+	Inputにconstructionを委譲する
+	Params:
+		args		= input constructor arguments
+		bufferSize	= バッファリングされる要素数
+	*/
+	this(Args...)(Args args, size_t bufferSize)
+	{
+		__ctor(Input(args), bufferSize);	// delegate construction
+	}
+
+	/**
+	Interfaces of InputPool.
+	*/
+	bool fetch()
+	body
+	{
+		if (available.length == 0)
+		{
+			ava_start = ava_end = 0;
+		}
+		auto v = buffer[ava_end .. $];
+		auto result = input.pull(v);
+		if (result)
+		{
+			ava_end += v.length;
+		}
+		return result;
+	}
+	
+	/// ditto
+	@property const(ubyte)[] available() const
+	{
+		return buffer[ava_start .. ava_end];
+	}
+	
+	/// ditto
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		ava_start += n;
+	}
+}
+unittest
+{
+	static assert(isInputPool!(BufferedSource!File));
+	//assert(0);	// todo
+}
+
+/**
+*/
+struct BufferedSink(Output) if (isSink!Output)
+{
+private:
+	Output output;
+	ubyte[] buffer;
+	size_t rsv_start = 0, rsv_end = 0;
+
+private:
+	this(T)(T o, size_t bufferSize) if (is(T == Output))
+	{
+		move(o, output);
+		buffer.length = bufferSize;
+	}
+public:
+	/**
+	Outputにconstructionを委譲する
+	Params:
+		args		= output constructor arguments
+		bufferSize	= バッファリングされる要素数
+	*/
+	this(Args...)(Args args, size_t bufferSize)
+	{
+		__ctor(Output(args), bufferSize);
+	}
+	~this()
+	{
+		while (reserves.length > 0)
+			flush();
+	}
+	
+	/**
+	Interfaces of OutputPool.
+	*/
+	@property ubyte[] usable()
+	{
+		return buffer[rsv_end .. $];
+	}
+	private @property const(ubyte)[] reserves()
+	{
+		return buffer[rsv_start .. rsv_end];
+	}
+	
+	/// ditto
+	void commit(size_t n)
+	{
+		assert(rsv_end + n <= buffer.length);
+		rsv_end += n;
+	}
+	
+	/// ditto
+	bool flush()
+	in { assert(reserves.length > 0); }
+	body
+	{
+		auto rsv = buffer[rsv_start .. rsv_end];
+		auto result = output.push(rsv);
+		if (result)
+		{
+			rsv_start = rsv_end - rsv.length;
+			if (reserves.length == 0)
+			{
+				rsv_start = rsv_end = 0;
+			}
+		}
+		return result;
+	}
+
+	/**
+		OutputRange I/F
+	*/
+	void put(ubyte[] data)
+	out {assert(usable.length > 0); }
+	body
+	{
+		while (data.length > 0)
+		{
+			if (usable.length == 0)
+				flush();
+			auto len = min(data.length, usable.length);
+			usable[0 .. len] = data[0 .. len];
+			data = data[len .. $];
+			commit(len);
+		}
+		if (usable.length == 0)
+			flush();
+	}
+}
+unittest
+{
+	static assert(isOutputPool!(BufferedSink!File));
+	//assert(0);	// todo
+}
+
+/**
+*/
+struct BufferedDevice(Device)
+	if (isDevice!Device)					// Bufferedの側でSource/Sink/Deviceを明示して区別する
+//	if (isSource!Device || isSink!Device)	// オリジナルのdeviceに応じて最大公約数のI/Fを提供する
+{
+private:
+	Device device;
+	ubyte[] buffer;
+	static if (isSink  !Device) size_t rsv_start = 0, rsv_end = 0;
+	static if (isSource!Device) size_t ava_start = 0, ava_end = 0;
+	static if (isDevice!Device) long base_pos = 0;
+
+private:
+	this(T)(T d, size_t bufferSize) if (is(T == Device))
+	{
+		move(d, device);
+		buffer.length = bufferSize;
+	}
+public:
+	/**
+	Deviceにconstructionを委譲する
+	Params:
+		args		= device constructor arguments
+		bufferSize	= バッファリングされる要素数
+	*/
+	this(Args...)(Args args, size_t bufferSize)
+	{
+		__ctor(Device(args), bufferSize);
+	}
+	
+  static if (isSink!Device)
+	~this()
+	{
+		while (reserves.length > 0)
+			flush();
+	}
+
+  static if (isSource!Device)
+	/**
+	Interfaces of InputPool.
+	*/
+	bool fetch()
+	body
+	{
+	  static if (isDevice!Device)
+		bool empty_reserves = (reserves.length == 0);
+	  else
+		enum empty_reserves = true;
+		
+		if (empty_reserves && available.length == 0)
+		{
+			static if (isDevice!Device)	base_pos += ava_end;
+			static if (isDevice!Device)	rsv_start = rsv_end = 0;
+										ava_start = ava_end = 0;
+		}
+		
+	  static if (isDevice!Device)
+		device.seek(base_pos + ava_end, SeekPos.Set);
+		
+		auto v = buffer[ava_end .. $];
+		auto result =  device.pull(v);
+		if (result)
+		{
+			ava_end += v.length;
+		}
+		return result;
+	}
+	
+  static if (isSource!Device)
+	/// ditto
+	@property const(ubyte)[] available() const
+	{
+		return buffer[ava_start .. ava_end];
+	}
+	
+  static if (isSource!Device)
+	/// ditto
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		ava_start += n;
+	}
+
+  static if (isSink!Device)
+	/**
+	Interfaces of OutputPool.
+	*/
+	@property ubyte[] usable()
+	{
+	  static if (isDevice!Device)
+		return buffer[ava_start .. $];
+	  else
+		return buffer[rsv_end .. $];
+	}
+  static if (isSink!Device)
+	private @property const(ubyte)[] reserves()
+	{
+		return buffer[rsv_start .. rsv_end];
+	}
+	
+  static if (isSink!Device)
+	/// ditto
+	void commit(size_t n)
+	{
+	  static if (isDevice!Device)
+	  {
+		assert(ava_start + n <= buffer.length);
+		ava_start += n;
+		ava_end = max(ava_end, ava_start);
+		rsv_end = ava_start;
+	  }
+	  else
+	  {
+		assert(rsv_end + n <= buffer.length);
+		rsv_end += n;
+	  }
+	}
+	
+  static if (isSink!Device)
+	/// ditto
+	bool flush()
+	in { assert(reserves.length > 0); }
+	body
+	{
+	  static if (isDevice!Device)
+		device.seek(base_pos + rsv_start, SeekPos.Set);
+		
+		auto rsv = buffer[rsv_start .. rsv_end];
+		auto result = device.push(rsv);
+		if (result)
+		{
+			rsv_start = rsv_end - rsv.length;
+			
+		  static if (isDevice!Device)
+			bool empty_available = (available.length == 0);
+		  else
+			enum empty_available = true;
+			
+			if (reserves.length == 0 && empty_available)
+			{
+				static if (isDevice!Device)	base_pos += ava_end;
+				static if (isDevice!Device)	ava_start = ava_end = 0;
+											rsv_start = rsv_end = 0;
+			}
+		}
+		return result;
+	}
+
+  static if (isSink!Device)
+	/**
+		OutputRange I/F
+	*/
+	void put(ubyte[] data)
+	out {assert(usable.length > 0); }
+	body
+	{
+		while (data.length > 0)
+		{
+			if (usable.length == 0)
+				flush();
+			auto len = min(data.length, usable.length);
+			usable[0 .. len] = data[0 .. len];
+			data = data[len .. $];
+			commit(len);
+		}
+		if (usable.length == 0)
+			flush();
+	}
+}
+unittest
+{
+	//assert(0);	// todo
+}
+
+/+/// ditto
+struct BufferedSource(Input) if (isArray!Input)
+{
+private:
+	alias Unqual!(ElementType!Input) E;
+	Input input;
+	size_t vewLen;
+
+public:
+	/*
+	bufferSizeは無視される
+	*/
+	this(Input i, size_t bufferSize)
+	{
+		move(i, input);
+	}
+
+	/**
+	Interfaces of pool.
+	*/
+	bool fetch()
+	in { assert(available.length == 0); }
+	body
+	{
+		if (input.empty)
+			return false;
+		return true;
+	}
+	
+	/// ditto
+	@property const(E)[] available() const
+	{
+		return input;
+	}
+	
+	/// ditto
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		input = input[1 .. $];
+	}
+}
+unittest
+{
+	//assert(0);	// todo
+}+/
+
+/+/// ditto
+struct BufferedSource(Input) if (!isArray!Input && isInputRange!Input)
+{
+private:
+	alias Unqual!(ElementType!Input) E;
+	Input input;
+	Unqual!E[] buffer;
+	Unqual!E[] view;
+
+public:
+	/**
+	*/
+	this(Input i, size_t bufferSize)
+	{
+		move(i, input);
+		buffer.length = bufferSize;
+	}
+
+	/**
+	Interfaces of pool.
+	*/
+	bool fetch()
+	in { assert(available.length == 0); }
+	body
+	{
+		if (input.empty)
+			return false;
+		
+		size_t i = 0;
+		for (; input.empty && i<buffer.length; ++i)
+		{
+			buffer[i] = input.front;
+			input.popFront();
+		}
+		view = buffer[0 .. i];
+		return true;
+	}
+	
+	/// ditto
+	@property const(E)[] available() const
+	{
+		return view;
+	}
+	
+	/// ditto
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		view = view[1 .. $];
+	}
+}
+unittest
+{
+	//assert(0);	// todo
+}+/
+
+/**
+構築済みのInputをRangedで包むための補助関数
+*/
+Ranged!Device ranged(Device)(Device device)
+{
+	return Ranged!Device(move(device));
+}
+
+/**
+PoolをInput/OutputRangeに変換する
+Design:
+	Rangeはコンストラクト直後にemptyが取れる、つまりPoolでいうfetch済みである必要があるが、
+	Poolは未fetchであることが必要なので互いの要件が矛盾する。よってPoolはInputRangeを
+	同時に提供できないため、これをWrapするRangedが必要となる。
+*/
+struct Ranged(Device) if (isInputPool!Device || isOutputPool!Device)
+{
+private:
+	Device device;
+	bool eof = false;
+
+private:
+	this(T)(T i) if (is(T == Device))
+	{
+		move(i, device);
+	  static if (isInputPool!Device)
+		eof = !device.fetch();
+	}
+public:
+	/**
+	Deviceにconstructionを委譲する
+	Params:
+		args		= device constructor arguments
+	*/
+	this(Args...)(Args args)
+	{
+		__ctor(Device(args));
+	}
+
+  static if (isInputPool!Device)
+	/**
+	Interfaces of input range.
+	*/
 	@property bool empty() const
 	{
 		return eof;
 	}
 	
-	const(ubyte)[] pull(size_t len, ubyte[] buf)
+  static if (isInputPool!Device)
+	/// ditto
+	@property ubyte front()
 	{
-		enum : uint { ERROR_HANDLE_EOF = 38 }	// todo
-
-		// yet support only synchronous read
-		
-		if (buf.length > 0)
-			len = min(buf.length, len);
-		else
-			buf.length = len;	// allocation
-		
-		DWORD size = void;
-		debug writefln("ReadFile : buf.ptr=%08X, len=%s", cast(uint)buf.ptr, len);
-		if (ReadFile(hFile, buf.ptr, len, &size, null))
-		{
-			buf = buf[0 .. size];
-			//eof = (size == 0);
-			eof = (size < len);		// valid on only synchronous read
-			//writefln("File pull, len = %s, size = %s, GetLastError == %s, ERROR_HANDLE_EOF = %s", len, size, GetLastError(), ERROR_HANDLE_EOF);
-		}
-		else
-		{
-			debug writefln("hFile=%08X, size=%s, GetLastError()=%s", cast(uint)hFile, size, GetLastError());
-			
-			throw new Exception("pull error");	//?
-			
-		//	// for overlapped I/O
-		//	eof = (GetLastError() == ERROR_HANDLE_EOF);
-		}
-		
-		return buf;
+		return device.available[0];
 	}
 	
-	bool push(ref const(ubyte)[] buf)
-	{
-		bool result;
-		
-		size_t len;
-		if (WriteFile(hFile, buf.ptr, buf.length, &len, null))
-			result = (len == buf.length);
-		else
-			throw new Exception("push error");	//?
-		
-		buf = buf[len .. $];
-		return result;
-	}
-	
-	void seek(long offset, SeekPos whence)
-	{
-	}
-}
-static assert(isSource!File);
-//static assert(isDevice!File);
-
-
-auto buffered(Source)(Source s, size_t bufferSize=2048)
-{
-	debug(Move) ScopePrint!"buffered" sp = 0;
-	return Buffered!Source(move(s), bufferSize);
-}
-
-/**
-?	BufferedはSourceで、かつInputRangeのI/Fを持つ
-	
-?	Bufferedは入力(Range/Source)をPartial Random Access Rangeにマップする
-
-	バッファのアロケーションについては積極的
-	
-	
-	RangeまたはSourceを取り、InputRangeとなる
-	
-	
-	
-	別名ByChunk
-	
-	x	BufferedはRangeとして扱ったほうが効率がよいため、Souce I/Fは提供しない
-	o	Souce/InputRangeのどちらで扱ってもコストはほぼ同じはず
-*/
-struct Buffered(Source)
-{
-	Source source;
-	ubyte[] buffer;
-	ubyte[] view;	// Not yet popFront/pulled data view on buffer
-	
-	this(Source s, size_t bufferSize)
-	{
-		debug(Move) ScopePrint!"Buffered.this" sp = 0;
-		move(s, source);
-		buffer.length = bufferSize;
-		fetch();
-	}
-	
-	@property bool empty() const
-	{
-		//debug(Decoder) writefln("Buffered empty, view.length = %s, source.empty = %s", view.length, source.empty);
-		return view.length==0 && source.empty;
-		//return view.length==0;	// synchronous read only
-	}
-	
-	/**
-		バッファを空にすることを優先する
-		fetchはバッファが空のときのみ行う
-	*/
-	const(ubyte)[] pull(size_t len, ubyte[] buf=null)
-	{
-		if (view.length == 0)
-			fetch();
-		
-		len = min(len, view.length);
-		if (buf.length > 0)
-		{
-			len = min(len, buf.length);
-			buf[0 .. len] = view[0 .. len];
-			view = view[len .. $];
-			return buf[0 .. len];
-		}
-		else
-		{
-			buf = view[0 .. len];
-			view = view[len .. $];
-			return buf;
-		}
-	}
-	
-	
-	@property ref ubyte front()
-	{
-		return view[0];
-	}
-	
+  static if (isInputPool!Device)
+	/// ditto
 	void popFront()
 	{
-		view = view[1 .. $];
-		if (view.length == 0)
-			fetch();
+		device.consume(1);
+		if (device.available.length == 0)
+			eof = !device.fetch();
 	}
 
-private:
-	void fetch()
+  static if (isOutputPool!Device)
+	/**
+	Interface of output range.
+	*/
+	void put(ubyte[] data)
 	{
-		auto v = source.pull(buffer.length, buffer);
-		view = buffer[0 .. v.length];
-		//debug(Decoder) writefln("Buffered fetch, source.empty = %s", source.empty);
+		device.put(data);
 	}
-}
-
-
-auto decoder(Char=char, Input)(Input input)
-{
-	debug(Move) ScopePrint!"decoder" sp = 0;
-	return Decoder!(Input, Char)(move(input));
 }
 
 /**
+Decoder構築用の補助関数
+*/
+auto decoder(Char=char, Input)(Input input, size_t bufferSize = 2048)
+{
+	return Decoder!(Input, Char)(move(input), bufferSize);
+}
+
+/+/**
 	Source、またはubyteのRangeをChar型のバイト表現とみなし、
 	これをdecodeしたdcharのRangeを構成する
+
+	//----
+	Poolを取ったときはPoolに
+	Sourceを取ったときはコンストラクタで与えられたbufferSizeのPoolになる
+	どちらも、Decoder自体はRange I/Fを持つ(予定)
+Bugs:
+	未完成
 */
 struct Decoder(Input, Char)
 	if (isSource!Input ||
 		(isInputRange!Input && is(ElementType!Input : const(ubyte))))
 {
-
+	static assert(0);	// todo
 private:
 	Input input;
 	bool eof;
+  static if (isSource!Input)
+	dchar[] buffer;
+  static if (isInputPool!Input)
+  {
+	ElementType!Input[] remain;
+	Appender!(dchar[]) buffer;
+	dchar[] view;
+  }
+  else
+  {
 	dchar ch;
+  }
 
 public:
+  static if (isSource!Input)
+	this(Input i, size_t bufferSize = 2048)
+	{
+		buffer.length = 2048;
+		
+		move(i, input);
+		popFront();		// fetch front
+	}
+  static if (isInputPool!Input)
 	this(Input i)
 	{
-		debug(Move) ScopePrint!"Decoder.this" sp = 0;
 		move(i, input);
 		popFront();		// fetch front
 	}
@@ -560,6 +1042,66 @@ public:
 	@property dchar front()
 	{
 		return ch;
+	}
+	
+  static if (isInputPool!Input)
+  {
+	bool fetch()
+	in { assert(available.length == 0); }
+	body
+	{
+		buffer.clear();
+		
+		remain = input.available;
+		if (remain.length)
+			remain = remain.idup, input.consume(remain.length);
+		
+		if (!input.fetch())
+			return false;	// remainがorphan byteとして残る
+		
+		if (!available.length)
+			return true;	// NonBlocking I/O
+		
+		assert(remain.length >= 0);
+		assert(input.available.length > 0);
+		
+		auto buf = chain(remain, input.available);
+		size_t i = 0;
+		foreach (e; buf)
+		{
+			try{
+				c = decode(buf[i .. $], i);		// decode はslicableなRangeを取れない...
+			}catch (UtfException e){
+				break;
+			}
+			buffer.put(c);
+		}
+		if (i < remain.length)
+			remain = remain[i .. $];
+		else
+			input.consume(i - remain.length);
+			delete remain;
+		
+		view = buffer.data;
+	}
+	@property const(dchar)[] available()
+	{
+		return view;
+	}
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		view = view[n .. $];
+	}
+	
+  }
+	void popFront()
+	{
+		
+		
+		
+		
 	}
 	
 	void popFront()
@@ -657,7 +1199,7 @@ unittest
 	decode_test!( char)(cast(ubyte[])strc, strd);
 	decode_test!(wchar)(cast(ubyte[])strw, strd);
 	decode_test!(dchar)(cast(ubyte[])strd, strd);
-}
+}+/
 
 
 version(Windows)
@@ -669,29 +1211,24 @@ else
 	static assert(0, "not yet supported");
 }
 
+
+//pragma(msg, "is( char : ubyte) = ", is( char : ubyte));
+//pragma(msg, "is(wchar : ubyte) = ", is(wchar : ubyte));
+//pragma(msg, "is(dchar : ubyte) = ", is(dchar : ubyte));
+
 /**
 	Examples:
 		lined!string(buffered(File("foo.txt")))
 		lined!(const(char))("foo\nbar\nbaz", "\n")
 */
 auto lined(String=string, R)(R r)
-//	if (isSomeChar!(ElementType!R))
 {
-	debug(Move) ScopePrint!"lined1" sp = 0;
-	debug(Move) writefln("&r = %08X", cast(uint)&r);
-	//pragma(msg, "0: lined : String=", String, ", R=", R/*, ", Delim=", Delim*/);
-	return Lined!(R, String, dstring)(move(r), cast(dstring)NativeNewLine);
+	return Lined!(R, dstring, String)(move(r), cast(dstring)NativeNewLine);
 }
 /// ditto
 auto lined(String=string, R, Delim)(R r, in Delim delim)
-//	if (isSomeChar!(ElementType!R) && is(Unqual!(ElementType!R) == Unqual!(ElementType!Delim)))
 {
-	debug(Move) ScopePrint!"lined2" sp = 0;
-	//pragma(msg, "1: lined : String=", String, ", R=", R, ", Delim=", Delim);
-//static if (is(typeof(delim) : const(dchar)[]))
-	return Lined!(R, String, Delim)(move(r), move(delim));
-//else
-//	return Lined!(R, String)(r, array(delim));
+	return Lined!(R, Delim, String)(move(r), move(delim));
 }
 
 /**
@@ -711,73 +1248,93 @@ auto lined(String=string, R, Delim)(R r, in Delim delim)
 		x	書き換えによってオリジナルのSink(Fileなど)への書き込みが行われる
 	
 	別名ByLine
+	
+	
+	//----
+	より抽象的な表現
+	InputからDelimを区切りとして、Inputの要素配列を切り出す
 */
-struct Lined(Range, String : Char[], Delim, Char)
-	if (is(typeof(
+struct Lined(Input, Delim, String : Char[], Char)
+/+	if (is(typeof(
 	{
-		void dummy(ref Appender!(Unqual!Char[]) app, ref Range r)
+		void dummy(ref Appender!(Unqual!Char[]) app, ref Input r)
 		{
 			app.put(r.front);
 		}
-	}())))	// →Rangeの要素をmutableな配列にコピーできるか
+	}())))	// →Inputの要素をmutableな配列にコピーできるか
++/
+	if (isSomeChar!Char)
 {
+	static assert(isInputPool!Input && is(PoolElementType!Input : const(ubyte)) && is(Char : const(char)));
+
 private:
-	Range input;
+	Input input;
 	Delim delim;
-	Unqual!(typeof(String.init[0]))[] lineBuffer;
+//	Appender!(Unqual!Char[]) buffer;	// trivial: reduce initializing const of appender
+	Appender!(Unqual!ubyte[]) buffer;	// trivial: reduce initializing const of appender
 	String line;
+	bool eof;
 
 public:
-	this(Range r, Delim d)
+	/**
+	*/
+	this(Input r, Delim d)
 	{
-		debug(Move) ScopePrint!"Lined.this" sp = 0;
 		move(r, input);
 		move(d, delim);
-		debug(Move) writefln("Lined.this -> r.source = %08s, pRefCounter = %08s", &r.source, r.source.pRefCounter ? *r.source.pRefCounter : 0);
 		popFront();
 	}
-	
+
+	/**
+	Interfaces of input range.
+	*/
 	@property bool empty() const
 	{
-		return line.length==0 && input.empty;
+		return eof;
 	}
 	
+	/// ditto
 	@property String front() const
 	{
 		return line;
 	}
 	
+	/// ditto
 	void popFront()
+	in { assert(!empty); }
+	body
 	{
-	  static if (is(Range R : Buffered!U, U) && is(String == const(char)[]))
-	  {
-		pragma(msg, "Lined!(Buffered special case");
+		const(ubyte)[] view;
 		
-		auto app = appender(lineBuffer);
-		app.clear();
-		
-		bool fetched = false;
-		
-		auto view = input.view;	// todo
-		if (input.view.length == 0)
+		bool fetchExact()	// fillAvailable?
 		{
-			input.fetch(), view = input.view;	// todo
+			view = input.available;
+			while (view.length == 0)
+			{
+				//writefln("fetched");
+				if (!input.fetch())
+					return false;
+				view = input.available;
+			}
+			return true;
 		}
+		if (!fetchExact())
+			return eof = true;
 		
-		size_t vlen = 0;
-		size_t dlen = 0;
+		buffer.clear();
 		
 		//writefln("Buffered.popFront : ");
-	  Retry:
-		for (vlen = 0; ; )
+		for (size_t vlen=0, dlen=0; ; )
 		{
 			if (vlen == view.length)
 			{
-				app.put(view);
-				input.fetch, view = input.view;
-				fetched = true;
-				//writefln("fetched");
-				goto Retry;
+				line = cast(String)(buffer.put(view), buffer.data);
+				input.consume(vlen);
+				if (!fetchExact())
+					break;
+				
+				vlen = 0;
+				continue;
 			}
 			
 			auto e = view[vlen];
@@ -788,13 +1345,15 @@ public:
 				++dlen;
 				if (dlen == delim.length)
 				{
-					input.view = view[vlen .. $];
-					
-					if (fetched)
-						app.put(view[0 .. vlen - dlen]);
+					if (buffer.data.length)
+					{
+						//writefln("%s@%s : %s %s %s %s", __FILE__, __LINE__, view, view.length, vlen, dlen);
+						line = cast(String)(buffer.put(view[0 .. vlen]), buffer.data[0 .. $ - dlen]);
+					}
 					else
-						vlen -= dlen;
+						line = cast(String)view[0 .. vlen - dlen];
 					
+					input.consume(vlen);
 					break;
 				}
 			}
@@ -802,60 +1361,18 @@ public:
 				dlen = 0;
 		}
 		
-		if (fetched)
-			line = app.data;
-		else
-			line = cast(const(char)[])view[0 .. vlen];
-		
-		//writefln("");
-	  }
-	  else
-	  {
-		auto app = appender(lineBuffer);
-		app.clear();
-		
-		size_t dlen = 0;
-	//	foreach (e; input)	inputがここでコピーされるので、inputそのものは進まない！
-		while (!input.empty)
-		{
-			auto e = input.front;
-			input.popFront();
-		//	size_t i = 0;
-		//	writefln("Lined.popFront, input.front(%s) = %0*X, stride = %s",
-		//		typeof(e).stringof, typeof(e).sizeof*2, e, std.utf.stride((&e)[0 .. 1], i));
-			app.put(e);
-			if (e == delim[dlen])
-			{
-				++dlen;
-				if (dlen == delim.length)
-				{
-					app.shrinkTo(app.data.length - delim.length);
-					break;
-				}
-			}
-			else
-				dlen = 0;
-		}
-	  static if (is(typeof(String.init[0]) == immutable))
-		line = app.data.idup;
-	  else
-		line = app.data;
-		
-		/*
-		mutableな配列を返す場合は、その要素の寿命について
-		1. ほかから共有されていない
-		2. ほかから共有されており、書き換わる可能性がある
-		の2種類がある。現実装は2.になっている(1.が必要な時は.dupが必要となる)
-		*/
-	  }
+	  static if (is(Char == immutable))
+		line = line.idup;
 	}
-	
-  static if (isOutputRange!(Range, String))
+
+
+/+
+  static if (isOutputRange!(Input, String))
 	void put()
 	{
-	}
+	}+/
 }
-unittest
+/+unittest
 {
 	void testParseLines(Str1, Str2)()
 	{
@@ -868,7 +1385,7 @@ unittest
 			auto ln = e[0], line = e[1];
 			
 			assert(line == expects[ln],
-				std.string.format(
+				format(
 					"lined!%s(%s) failed : \n"
 					"[%s]\tline   = %s\n\texpect = %s",
 						Str2.stringof, Str1.stringof,
@@ -885,9 +1402,9 @@ unittest
 	testParseLines!(dstring,  string)();
 	testParseLines!(dstring, wstring)();
 	testParseLines!(dstring, dstring)();
-}
+}+/
 
-unittest
+/+unittest
 {
 	// decoderとlinedの組み合わせ
 	
@@ -906,15 +1423,12 @@ unittest
 		alias Unqual!(typeof(Str1.init[0])) Char1;
 		foreach (line; lined!Str2(decoder!Char1(data)))
 		{
-			// worksaround for std.string.format doesn't support formatting array.
-			string msg()
-			{
-				writefln("\n\t[%s] = \tline   = %(%02X %)\n\t\texpect = %(%02X %)",
-					ln, cast(ubyte[])line, cast(ubyte[])expect[ln]);
-				return std.string.format("%s -> lined!%s fails", Str1.stringof, Str2.stringof);
-			}
-			
-			assert(expect[ln] == line, msg());
+			assert(expect[ln] == line,
+				format(
+					"%s -> lined!%s fails\n"
+					"\t[%s] = \tline   = %(%02X %)\n\t\texpect = %(%02X %)",
+					Str1.stringof, Str2.stringof,
+					ln, cast(ubyte[])line, cast(ubyte[])expect[ln]));
 			++ln;
 		}
 		assert(ln == expect.length);
@@ -977,30 +1491,12 @@ unittest
 	decode_encode!(dstring,  string)(ByteSource(cast(ubyte[])encoded_d), expects_c);
 	decode_encode!(dstring, wstring)(ByteSource(cast(ubyte[])encoded_d), expects_w);
 	decode_encode!(dstring, dstring)(ByteSource(cast(ubyte[])encoded_d), expects_d);
-}
+}+/
 
-
-
-debug(Move)
-struct ScopePrint(string msg)
-{
-	this(int dummy)
-	{
-		writefln("Scope enter : %s", msg);
-	}
-	@disable this(this);
-	~this()
-	{
-		writefln("Scope exit  : %s", msg);
-	}
-}
 
 import std.exception : pointsTo;
 void move(T, int line=__LINE__)(ref T source, ref T target)
 {
-	debug(Move) pragma(msg, "move instantiate : line=", line);
-	debug(Move) writefln("move &source=%08X, &target=%08X", cast(uint)&source, cast(uint)&target);
-	
     if (&source == &target) return;
     assert(!pointsTo(source, source));
     static if (is(T == struct))
@@ -1015,9 +1511,7 @@ void move(T, int line=__LINE__)(ref T source, ref T target)
 //      static if (is(typeof(source.__dtor())) || is(typeof(source.__postblit())))
 		static if (hasElaborateDestructor!(typeof(source)))
         {
-			debug(Move) pragma(msg, "  hasElaborateDestructor!T");
             static T empty;
-            debug(Move) writefln("%s source clear", T.stringof);
             memcpy(&source, &empty, T.sizeof);
         }
     }
@@ -1033,10 +1527,209 @@ void move(T, int line=__LINE__)(ref T source, ref T target)
         // }
     }
 }
-/// Ditto
 T move(T)(ref T src)
 {
     T result;
     move(src, result);
     return result;
+}
+
+
+/*
+	How to get PageSize:
+
+	STLport
+		void _Filebuf_base::_S_initialize()
+		{
+		#if defined (__APPLE__)
+		  int mib[2];
+		  size_t pagesize, len;
+		  mib[0] = CTL_HW;
+		  mib[1] = HW_PAGESIZE;
+		  len = sizeof(pagesize);
+		  sysctl(mib, 2, &pagesize, &len, NULL, 0);
+		  _M_page_size = pagesize;
+		#elif defined (__DJGPP) && defined (_CRAY)
+		  _M_page_size = BUFSIZ;
+		#else
+		  _M_page_size = sysconf(_SC_PAGESIZE);
+		#endif
+		}
+		
+		void _Filebuf_base::_S_initialize() {
+		  SYSTEM_INFO SystemInfo;
+		  GetSystemInfo(&SystemInfo);
+		  _M_page_size = SystemInfo.dwPageSize;
+		  // might be .dwAllocationGranularity
+		}
+	DigitalMars C
+		stdio.h
+		
+		#if M_UNIX || M_XENIX
+		#define BUFSIZ		4096
+		extern char * __cdecl _bufendtab[];
+		#elif __INTSIZE == 4
+		#define BUFSIZ		0x4000
+		#else
+		#define BUFSIZ		1024
+		#endif
+
+	version(Windows)
+	{
+		// from win32.winbase
+		struct SYSTEM_INFO
+		{
+		  union {
+		    DWORD dwOemId;
+		    struct {
+		      WORD wProcessorArchitecture;
+		      WORD wReserved;
+		    }
+		  }
+		  DWORD dwPageSize;
+		  LPVOID lpMinimumApplicationAddress;
+		  LPVOID lpMaximumApplicationAddress;
+		  DWORD* dwActiveProcessorMask;
+		  DWORD dwNumberOfProcessors;
+		  DWORD dwProcessorType;
+		  DWORD dwAllocationGranularity;
+		  WORD wProcessorLevel;
+		  WORD wProcessorRevision;
+		}
+		extern(Windows) export VOID GetSystemInfo(
+		  SYSTEM_INFO* lpSystemInfo);
+
+		void getPageSize()
+		{
+			SYSTEM_INFO SystemInfo;
+			GetSystemInfo(&SystemInfo);
+			auto _M_page_size = SystemInfo.dwPageSize;
+			writefln("in Win32 page_size = %s", _M_page_size);
+		}
+	}
+*/
+
+
+template CharType(T) if (isSomeString!T)
+{
+	alias ForeachType!T CharType;
+}
+
+import std.format;
+string format(Char, A...)(in Char[] fmt, A args)
+{
+    auto writer = appender!string();
+    formattedWrite(writer, fmt, args);
+	return writer.data;
+}
+unittest
+{
+	auto s = format("%(%02X %)", [1,2,3]);
+	assert(s == "01 02 03");
+}
+
+T* end(T)(T[] arr)
+{
+	return arr.ptr + arr.length;
+}
+
+void main()
+{
+  version (MeasPerf)
+  {
+	version (MeasPerf_LinedIn)		doMeasPerf_LinedIn();
+	version (MeasPerf_BufferdOut)	doMeasPerf_BufferdOut();
+  }
+}
+
+void doMeasPerf_LinedIn()
+{
+	void test_file_buffered_lined(String)(string fname, string msg)
+	{
+		enum CalcPerf = true;
+		size_t nlines = 0;
+		
+		auto pc = new PerformanceCounter;
+		pc.start;
+		{	foreach (i; 0 .. 100)
+			{
+				auto f = lined!String(BufferedSource!(device.File)(fname, 2048));
+				foreach (line; f)
+				{
+					line.dup, ++nlines;
+					static if (!CalcPerf) writefln("%s", line);
+				}
+				static if (!CalcPerf) assert(0);
+			}
+		}pc.stop;
+		
+		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+	}
+	void test_std_lined(string fname, string msg)
+	{
+		size_t nlines = 0;
+		
+		auto pc = new PerformanceCounter;
+		pc.start;
+		{	foreach (i; 0 .. 100)
+			{
+				auto f = std.stdio.File(fname);
+				foreach (line; f.byLine)
+				{
+					line.dup, ++nlines;
+				}
+				f.close();
+			}
+		}pc.stop;
+		
+		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+	}
+
+	writefln("Lined!(BufferedSource!File) performance measurement:");
+	auto fname = __FILE__;
+	test_std_lined							(fname,        "char[] std in ");
+	test_file_buffered_lined!(const(char)[])(fname, "const(char)[] dev in ");	// sliceed line
+	test_file_buffered_lined!(string)		(fname,        "string dev in ");	// idup-ed line
+}
+
+void doMeasPerf_BufferdOut()
+{
+	enum RemoveFile = true;
+	size_t nlines = 100000;
+//	auto data = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n";
+	auto data = "1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\r\n";
+	
+	void test_std_out(string fname, string msg)
+	{
+		auto pc = new PerformanceCounter;
+		pc.start;
+		{	auto f = std.stdio.File(fname, "wb");
+			foreach (i; 0 .. nlines)
+			{
+				f.write(data);
+			}
+		}pc.stop;
+		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+		static if (RemoveFile) std.file.remove(fname);
+	}
+	void test_dev_out(alias Buffered)(string fname, string msg)
+	{
+		auto bytedata = cast(ubyte[])data;
+		
+		auto pc = new PerformanceCounter;
+		pc.start;
+		{	auto f = Buffered!(device.File)(fname, "w", 2048);
+			foreach (i; 0 .. nlines)
+			{
+				f.put(bytedata);
+			}
+		}pc.stop;
+		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+		static if (RemoveFile) std.file.remove(fname);
+	}
+
+	writefln("BufferedSink/Device!File performance measurement:");
+	test_std_out                 ("out_test1.txt",        "std out");
+	test_dev_out!(BufferedSink)  ("out_test2.txt", "  sink dev out");
+	test_dev_out!(BufferedDevice)("out_test3.txt", "device dev out");
 }
