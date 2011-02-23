@@ -10,6 +10,12 @@ version(Windows)
 	import core.sys.windows.windows;
 }
 
+version(unittest)
+{
+	import std.perf, std.file;
+	version = MeasPerf_BufferedSink;
+}
+
 /*
 	std.file.File.ByChunkの問題点：
 		ubyte[]のレンジである
@@ -131,20 +137,21 @@ template PoolElementType(S) if (isInputPool!S)
 	alias typeof(S.init.available[0]) PoolElementType;
 }
 
-/+/*
+/*
 	Check that S is sink.
 	Sink supports empty(?) and push operation.
 */
 template isSink(T)
 {
-	enum isSink = is(typeof({
+	enum isSink = false;
+/+	enum isSink = is(typeof({
 		void dummy(ref S s)
 		{
 			if (s.empty){}	//?
 			const(ubyte)[] buf;
 			if (push(s, buf)) {}
 		}
-	}()));
+	}()));+/
 }
 
 /*
@@ -152,7 +159,8 @@ template isSink(T)
 */
 template isDevice(S)
 {
-	enum isDevice = isSource!S && isSink!S;
+	enum isDevice = false;
+//	enum isDevice = isSource!S && isSink!S;
 }
 
 // seek whence...
@@ -162,7 +170,7 @@ enum SeekPos {
 	End
 }
 
-/*
+/+/*
 	Check that S is seekable source or sink.
 	Seekable source/sink supports seek operation.
 */
@@ -270,11 +278,46 @@ private:
 public:
 	/**
 	*/
-	this(string fname)
+	this(string fname, in char[] mode = "r")
 	{
 		int share = FILE_SHARE_READ | FILE_SHARE_WRITE;
-		int access = GENERIC_READ;
-		int createMode = OPEN_EXISTING;
+		int access = void;
+		int createMode = void;
+		
+		// fopenにはOPEN_ALWAYSに相当するModeはない？
+		switch (mode)
+		{
+			case "r":
+				access = GENERIC_READ;
+				createMode = OPEN_EXISTING;
+				break;
+			case "w":
+				access = GENERIC_WRITE;
+				createMode = CREATE_ALWAYS;
+				break;
+			case "a":
+				assert(0);
+			
+			case "r+":
+				access = GENERIC_READ | GENERIC_WRITE;
+				createMode = OPEN_EXISTING;
+				break;
+			case "w+":
+				access = GENERIC_READ | GENERIC_WRITE;
+				createMode = CREATE_ALWAYS;
+				break;
+			case "a+":
+				assert(0);
+			
+			// do not have binary mode(binary access only)
+		//	case "rb":
+		//	case "wb":
+		//	case "ab":
+		//	case "rb+":	case "r+b":
+		//	case "wb+":	case "w+b":
+		//	case "ab+":	case "a+b":
+		}
+		
 		hFile = CreateFileW(
 			std.utf.toUTF16z(fname), access, share, null, createMode, 0, null);
 		pRefCounter = new size_t();
@@ -344,29 +387,61 @@ public:
 	}
 	}
 	
-/+	void seek(long offset, SeekPos whence)
+	ulong seek(long offset, SeekPos whence)
 	{
-	}+/
+	  version(Windows)
+	  {
+		int hi = cast(int)(offset>>32);
+		uint low = SetFilePointer(hFile, cast(int)offset, &hi, whence);
+		if ((low == INVALID_SET_FILE_POINTER) && (GetLastError() != 0))
+			throw new /*Seek*/Exception("unable to move file pointer");
+		ulong result = (cast(ulong)hi << 32) + low;
+	  }
+	  else
+	  version (Posix)
+	  {
+		auto result = lseek(hFile, cast(int)offset, whence);
+		if (result == cast(typeof(result))-1)
+			throw new /*Seek*/Exception("unable to move file pointer");
+	  }
+		return cast(ulong)result;
+	}
 }
 unittest
 {
 	static assert(isSource!File);
 	//static assert(isDevice!File);
-	assert(0);	// todo
+	//assert(0);	// todo
 }
 
 /**
 構築済みのInputをBufferedで包むための補助関数
 */
-Buffered!Input buffered(Input)(Input i, size_t bufferSize = 2048)
+Buffered!Device buffered(Device)(Device dev, size_t bufferSize = 2048)
 {
-	return Buffered!Input(move(i), bufferSize);
+	return Buffered!Device(move(dev), bufferSize);
+}
+
+/**
+	todo
+*/
+template Buffered(T)
+{
+	static if (isDevice!T)
+		alias BufferedDevice!T Buffered;
+	else
+	{
+		static if (isSource!T)
+			alias BufferedSource!T Buffered;
+		static if (isSink!T)
+			alias BufferedSink!T Buffered;
+	}
 }
 
 /**
 InputとしてSource/配列/InputRangeを取り、ubyteのPool I/Fを提供する
 */
-struct Buffered(Input) if (isSource!Input)
+struct BufferedSource(Input) if (isSource!Input)
 {
 private:
 	Input input;
@@ -388,8 +463,7 @@ public:
 	*/
 	this(Args...)(Args args, size_t bufferSize)
 	{
-		move(Input(args), input);
-		buffer.length = bufferSize;
+		__ctor(Input(args), bufferSize);	// delegate construction
 	}
 
 	/**
@@ -421,11 +495,174 @@ public:
 unittest
 {
 	static assert(isInputPool!(Buffered!File));
-	assert(0);	// todo
+	//assert(0);	// todo
 }
 
+/**
+*/
+struct BufferedSink(Output)
+{
+private:
+	Output output;
+	ubyte[] buffer;
+	size_t rsv_start, rsv_end;
+
+private:
+	this(T)(T o, size_t bufferSize) if (is(T == Output))
+	{
+		move(o, output);
+		buffer.length = bufferSize;
+		rsv_start = rsv_end = 0;
+	}
+public:
+	this(Args...)(Args args, size_t bufferSize)
+	{
+		__ctor(Output(args), bufferSize);
+	}
+	~this()
+	{
+		while (reserves.length > 0)
+			flush();
+	}
+	
+	@property ubyte[] usable()
+	{
+		return buffer[rsv_end .. $];
+	}
+	private @property const(ubyte)[] reserves()
+	{
+		return buffer[rsv_start .. rsv_end];
+	}
+	
+	void commit(size_t n)
+	{
+		assert(rsv_end + n <= buffer.length);
+		rsv_end += n;
+	}
+	
+	bool flush()
+	in { assert(reserves.length > 0); }
+	body
+	{
+		auto rsv = buffer[rsv_start .. rsv_end];
+		auto result = output.push(rsv);
+		if (result)
+		{
+			if (rsv.length == 0)
+				rsv_start = rsv_end = 0;
+			else
+				rsv_start = rsv_end - rsv.length;
+		}
+		return result;
+	}
+
+	/**
+		OutputRange I/F
+	*/
+	void put(ubyte[] data)
+	out {assert(usable.length > 0); }
+	body
+	{
+		while (data.length > 0)
+		{
+			if (usable.length == 0)
+				flush();
+			auto len = min(data.length, usable.length);
+			usable[0 .. len] = data[0 .. len];
+			data = data[len .. $];
+			commit(len);
+		}
+		if (usable.length == 0)
+			flush();
+	}
+}
+/+unittest
+{
+	// planned user code
+	
+//	f = Buffered!File("out_test.txt");
+//	f.
+	
+	/*{
+		auto f = File("out_test.txt", "w+");
+		foreach (c; 'A' .. 'Z'+1)
+		{
+			ubyte[2] buf;
+			const(ubyte)[] pbuf;
+			
+			buf[0] = cast(ubyte)c, pbuf = buf[0..1];
+			f.push(pbuf);
+			if (c == 'Z')
+			{
+				buf[0] = '\r', pbuf = buf[0..1];
+				f.push(pbuf);
+				buf[0] = '\n', pbuf = buf[0..1];
+				f.push(pbuf);
+			}
+		}
+	}*/
+
+	{
+		auto f = BufferedSink!File("out_test.txt", "w", 2048);
+		auto data = cast(ubyte[])"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+	  version(all)
+	  {
+		f.put(data);
+	  }else{
+		auto r = f.usable;
+		put(r, data);
+		//writefln("f.available = [%(%02X %)]", f.available);
+		f.commit(data.length);
+		//writefln("f.available = [%(%02X %)]", f.available);
+		f.flush();
+	  }
+	}
+}+/
+version(MeasPerf_BufferedSink)
+unittest
+{
+	enum RemoveFile = true;
+	size_t nlines = 100000;
+	auto data = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n";
+	
+	void test_std_out(string fname, string msg)
+	{
+		auto pc = new PerformanceCounter;
+		pc.start;
+		{	auto f = std.stdio.File(fname, "wb");
+			foreach (i; 0 .. nlines)
+			{
+				f.write(data);
+			}
+		}pc.stop;
+		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+		static if (RemoveFile) std.file.remove(fname);
+	}
+	void test_dev_out(string fname, string msg)
+	{
+		auto bytedata = cast(ubyte[])data;
+		
+		auto pc = new PerformanceCounter;
+		pc.start;
+		{	auto f = BufferedSink!(device.File)(fname, "w", 2048);
+			foreach (i; 0 .. nlines)
+			{
+				f.put(bytedata);
+			}
+		}pc.stop;
+		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+		static if (RemoveFile) std.file.remove(fname);
+	}
+
+	writefln("BufferedSink performance measurement:");
+	test_std_out("out_test1.txt", "std out");
+	test_dev_out("out_test2.txt", "dev out");
+}
+
+
+
 /// ditto
-struct Buffered(Input) if (isArray!Input)
+struct BufferedSource(Input) if (isArray!Input)
 {
 private:
 	alias Unqual!(ElementType!Input) E;
@@ -469,11 +706,11 @@ public:
 }
 unittest
 {
-	assert(0);	// todo
+	//assert(0);	// todo
 }
 
 /// ditto
-struct Buffered(Input) if (!isArray!Input && isInputRange!Input)
+struct BufferedSource(Input) if (!isArray!Input && isInputRange!Input)
 {
 private:
 	alias Unqual!(ElementType!Input) E;
@@ -526,7 +763,7 @@ public:
 }
 unittest
 {
-	assert(0);	// todo
+	//assert(0);	// todo
 }
 
 /**
@@ -604,7 +841,7 @@ auto decoder(Char=char, Input)(Input input, size_t bufferSize = 2048)
 	return Decoder!(Input, Char)(move(input), bufferSize);
 }
 
-/**
+/+/**
 	Source、またはubyteのRangeをChar型のバイト表現とみなし、
 	これをdecodeしたdcharのRangeを構成する
 
@@ -817,7 +1054,7 @@ unittest
 	decode_test!( char)(cast(ubyte[])strc, strd);
 	decode_test!(wchar)(cast(ubyte[])strw, strd);
 	decode_test!(dchar)(cast(ubyte[])strd, strd);
-}
+}+/
 
 
 version(Windows)
@@ -990,7 +1227,7 @@ public:
 	{
 	}+/
 }
-unittest
+/+unittest
 {
 	void testParseLines(Str1, Str2)()
 	{
@@ -1020,9 +1257,9 @@ unittest
 	testParseLines!(dstring,  string)();
 	testParseLines!(dstring, wstring)();
 	testParseLines!(dstring, dstring)();
-}
+}+/
 
-unittest
+/+unittest
 {
 	// decoderとlinedの組み合わせ
 	
@@ -1109,7 +1346,7 @@ unittest
 	decode_encode!(dstring,  string)(ByteSource(cast(ubyte[])encoded_d), expects_c);
 	decode_encode!(dstring, wstring)(ByteSource(cast(ubyte[])encoded_d), expects_w);
 	decode_encode!(dstring, dstring)(ByteSource(cast(ubyte[])encoded_d), expects_d);
-}
+}+/
 
 
 import std.exception : pointsTo;
@@ -1171,4 +1408,14 @@ unittest
 {
 	auto s = format("%(%02X %)", [1,2,3]);
 	assert(s == "01 02 03");
+}
+
+T* end(T)(T[] arr)
+{
+	return arr.ptr + arr.length;
+}
+
+version(unittest)
+{
+	void main(){}
 }
