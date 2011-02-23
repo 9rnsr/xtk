@@ -10,10 +10,12 @@ version(Windows)
 	import core.sys.windows.windows;
 }
 
-version(unittest)
+version = MeasPerf;
+version (MeasPerf)
 {
 	import std.perf, std.file;
 	version = MeasPerf_BufferedSink;
+	version = MeasPerf_Lined;
 }
 
 /*
@@ -618,47 +620,6 @@ public:
 	  }
 	}
 }+/
-version(MeasPerf_BufferedSink)
-unittest
-{
-	enum RemoveFile = true;
-	size_t nlines = 100000;
-	auto data = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n";
-	
-	void test_std_out(string fname, string msg)
-	{
-		auto pc = new PerformanceCounter;
-		pc.start;
-		{	auto f = std.stdio.File(fname, "wb");
-			foreach (i; 0 .. nlines)
-			{
-				f.write(data);
-			}
-		}pc.stop;
-		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
-		static if (RemoveFile) std.file.remove(fname);
-	}
-	void test_dev_out(string fname, string msg)
-	{
-		auto bytedata = cast(ubyte[])data;
-		
-		auto pc = new PerformanceCounter;
-		pc.start;
-		{	auto f = BufferedSink!(device.File)(fname, "w", 2048);
-			foreach (i; 0 .. nlines)
-			{
-				f.put(bytedata);
-			}
-		}pc.stop;
-		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
-		static if (RemoveFile) std.file.remove(fname);
-	}
-
-	writefln("BufferedSink performance measurement:");
-	test_std_out("out_test1.txt", "std out");
-	test_dev_out("out_test2.txt", "dev out");
-}
-
 
 
 /// ditto
@@ -1390,6 +1351,79 @@ T move(T)(ref T src)
 }
 
 
+/*
+	How to get PageSize:
+
+	STLport
+		void _Filebuf_base::_S_initialize()
+		{
+		#if defined (__APPLE__)
+		  int mib[2];
+		  size_t pagesize, len;
+		  mib[0] = CTL_HW;
+		  mib[1] = HW_PAGESIZE;
+		  len = sizeof(pagesize);
+		  sysctl(mib, 2, &pagesize, &len, NULL, 0);
+		  _M_page_size = pagesize;
+		#elif defined (__DJGPP) && defined (_CRAY)
+		  _M_page_size = BUFSIZ;
+		#else
+		  _M_page_size = sysconf(_SC_PAGESIZE);
+		#endif
+		}
+		
+		void _Filebuf_base::_S_initialize() {
+		  SYSTEM_INFO SystemInfo;
+		  GetSystemInfo(&SystemInfo);
+		  _M_page_size = SystemInfo.dwPageSize;
+		  // might be .dwAllocationGranularity
+		}
+	DigitalMars C
+		stdio.h
+		
+		#if M_UNIX || M_XENIX
+		#define BUFSIZ		4096
+		extern char * __cdecl _bufendtab[];
+		#elif __INTSIZE == 4
+		#define BUFSIZ		0x4000
+		#else
+		#define BUFSIZ		1024
+		#endif
+
+	version(Windows)
+	{
+		// from win32.winbase
+		struct SYSTEM_INFO
+		{
+		  union {
+		    DWORD dwOemId;
+		    struct {
+		      WORD wProcessorArchitecture;
+		      WORD wReserved;
+		    }
+		  }
+		  DWORD dwPageSize;
+		  LPVOID lpMinimumApplicationAddress;
+		  LPVOID lpMaximumApplicationAddress;
+		  DWORD* dwActiveProcessorMask;
+		  DWORD dwNumberOfProcessors;
+		  DWORD dwProcessorType;
+		  DWORD dwAllocationGranularity;
+		  WORD wProcessorLevel;
+		  WORD wProcessorRevision;
+		}
+		extern(Windows) export VOID GetSystemInfo(
+		  SYSTEM_INFO* lpSystemInfo);
+
+		void getPageSize()
+		{
+			SYSTEM_INFO SystemInfo;
+			GetSystemInfo(&SystemInfo);
+			auto _M_page_size = SystemInfo.dwPageSize;
+			writefln("in Win32 page_size = %s", _M_page_size);
+		}
+	}
+*/
 
 
 template CharType(T) if (isSomeString!T)
@@ -1415,7 +1449,101 @@ T* end(T)(T[] arr)
 	return arr.ptr + arr.length;
 }
 
-version(unittest)
+void main()
 {
-	void main(){}
+  version (MeasPerf)
+  {
+	version (MeasPerf_BufferedSink)	doMeasPerf_BufferedSink();
+	version (MeasPerf_Lined)		doMeasPerf_Lined();
+  }
+}
+
+void doMeasPerf_BufferedSink()
+{
+	enum RemoveFile = true;
+	size_t nlines = 100000;
+	auto data = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n";
+	
+	void test_std_out(string fname, string msg)
+	{
+		auto pc = new PerformanceCounter;
+		pc.start;
+		{	auto f = std.stdio.File(fname, "wb");
+			foreach (i; 0 .. nlines)
+			{
+				f.write(data);
+			}
+		}pc.stop;
+		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+		static if (RemoveFile) std.file.remove(fname);
+	}
+	void test_dev_out(string fname, string msg)
+	{
+		auto bytedata = cast(ubyte[])data;
+		
+		auto pc = new PerformanceCounter;
+		pc.start;
+		{	auto f = BufferedSink!(device.File)(fname, "w", 2048);
+			foreach (i; 0 .. nlines)
+			{
+				f.put(bytedata);
+			}
+		}pc.stop;
+		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+		static if (RemoveFile) std.file.remove(fname);
+	}
+
+	writefln("BufferedSink!File performance measurement:");
+	test_std_out("out_test1.txt", "std out");
+	test_dev_out("out_test2.txt", "dev out");
+}
+
+void doMeasPerf_Lined()
+{
+	void test_file_buffered_lined(String)(string fname, string msg)
+	{
+		enum CalcPerf = true;
+		size_t nlines = 0;
+		
+		auto pc = new PerformanceCounter;
+		pc.start;
+		{	foreach (i; 0 .. 100)
+			{
+				auto f = lined!String(buffered(device.File(fname), 2048));
+				foreach (line; f)
+				{
+					line.dup, ++nlines;
+					static if (!CalcPerf) writefln("%s", line);
+				}
+				static if (!CalcPerf) assert(0);
+			}
+		}pc.stop;
+		
+		writefln("%24s : %g line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+	}
+	void test_std_lined(string fname, string msg)
+	{
+		size_t nlines = 0;
+		
+		auto pc = new PerformanceCounter;
+		pc.start;
+		{	foreach (i; 0 .. 100)
+			{
+				auto f = std.stdio.File(fname);
+				foreach (line; f.byLine)
+				{
+					line.dup, ++nlines;
+				}
+				f.close();
+			}
+		}pc.stop;
+		
+		writefln("%24s : %g line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+	}
+
+	writefln("Lined!(BufferedSource!File) performance measurement:");
+	auto fname = __FILE__;
+	test_std_lined							(fname, "char[]  stdio");
+	test_file_buffered_lined!(const(char)[])(fname, "const(char)[] device");	// sliceed line
+	test_file_buffered_lined!(string)		(fname, "string device");			// idup-ed line
 }
