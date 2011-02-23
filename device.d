@@ -100,14 +100,38 @@ $(DDOC_DECL_DD
 */
 template isSource(S)
 {
-	enum isSource =
-		is(typeof({
-			void dummy(ref S s)
-			{
-				ubyte[] buf;
-				bool empty = s.pull(buf);
-			}
-		}()));
+	enum isSource = is(typeof({
+		S s;
+		ubyte[] buf;
+		while(s.pull(buf))
+		{
+			// ...
+		} 
+	}()));
+}
+
+/*
+Returns $(D true) if $(D S) is a $(I sink). A Source must define the
+primitive $(D push). 
+*/
+template isSink(S)
+{
+	enum isSink = is(typeof({
+		S s;
+		const(ubyte)[] buf;
+		do
+		{
+			// ...
+		}while (s.push(buf))
+	}()));
+}
+
+/*
+	Device supports both operations of source and sink.
+*/
+template isDevice(S)
+{
+	enum isDevice = isSource!S && isSink!S;
 }
 
 /**
@@ -122,47 +146,43 @@ Basic element of sink is ubyte.
 */
 template isInputPool(S)
 {
-	enum isInputPool =
-		is(typeof({
-			void dummy(ref S s)
-			{
-				if (s.fetch()){}
-				auto buf = s.available;
-				size_t n;
-				s.consume(n);
-			}
-		}()));
-}
-
-template PoolElementType(S) if (isInputPool!S)
-{
-	alias typeof(S.init.available[0]) PoolElementType;
-}
-
-/*
-	Check that S is sink.
-	Sink supports empty(?) and push operation.
-*/
-template isSink(T)
-{
-	enum isSink = false;
-/+	enum isSink = is(typeof({
-		void dummy(ref S s)
+	enum isInputPool = is(typeof({
+		S s;
+		while (s.fetch())
 		{
-			if (s.empty){}	//?
-			const(ubyte)[] buf;
-			if (push(s, buf)) {}
+			auto buf = s.available;
+			size_t n;
+			s.consume(n);
 		}
-	}()));+/
+	}()));
 }
 
-/*
-	Device supports both operations of source and sink.
+/**
 */
-template isDevice(S)
+template isOutputPool(S)
 {
-	enum isDevice = false;
-//	enum isDevice = isSource!S && isSink!S;
+	enum isOutputPool = is(typeof({
+		S s;
+		do
+		{
+			auto buf = s.usable;
+			size_t n;
+			s.commit(n);
+		}while (s.flush())
+	}()));
+}
+
+/**
+*/
+template PoolElementType(S)
+{
+//	  static if (isDevice)
+//		static assert(is(S.init.available[0] == s.init.usable[0]));
+
+	static if (isInputPool!S)
+		alias typeof(S.init.available[0]) PoolElementType;
+	static if (isOutputPool!S)
+		alias typeof(S.init.usable[0]) PoolElementType;
 }
 
 // seek whence...
@@ -412,7 +432,8 @@ public:
 unittest
 {
 	static assert(isSource!File);
-	//static assert(isDevice!File);
+	static assert(isSink!File);
+	static assert(isDevice!File);
 	//assert(0);	// todo
 }
 
@@ -496,13 +517,13 @@ public:
 }
 unittest
 {
-	static assert(isInputPool!(Buffered!File));
+	static assert(isInputPool!(BufferedSource!File));
 	//assert(0);	// todo
 }
 
 /**
 */
-struct BufferedSink(Output)
+struct BufferedSink(Output) if (isSink!Output)
 {
 private:
 	Output output;
@@ -577,6 +598,11 @@ public:
 		if (usable.length == 0)
 			flush();
 	}
+}
+unittest
+{
+	static assert(isOutputPool!(BufferedSink!File));
+	//assert(0);	// todo
 }
 /+unittest
 {
@@ -1462,7 +1488,8 @@ void doMeasPerf_BufferedSink()
 {
 	enum RemoveFile = true;
 	size_t nlines = 100000;
-	auto data = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n";
+//	auto data = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n";
+	auto data = "1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\r\n";
 	
 	void test_std_out(string fname, string msg)
 	{
@@ -1509,7 +1536,7 @@ void doMeasPerf_Lined()
 		pc.start;
 		{	foreach (i; 0 .. 100)
 			{
-				auto f = lined!String(buffered(device.File(fname), 2048));
+				auto f = lined!String(BufferedSource!(device.File)(fname, 2048));
 				foreach (line; f)
 				{
 					line.dup, ++nlines;
@@ -1519,7 +1546,7 @@ void doMeasPerf_Lined()
 			}
 		}pc.stop;
 		
-		writefln("%24s : %g line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
 	}
 	void test_std_lined(string fname, string msg)
 	{
@@ -1538,12 +1565,12 @@ void doMeasPerf_Lined()
 			}
 		}pc.stop;
 		
-		writefln("%24s : %g line/sec", msg, nlines / (1.e-6 * pc.microseconds));
+		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
 	}
 
 	writefln("Lined!(BufferedSource!File) performance measurement:");
 	auto fname = __FILE__;
-	test_std_lined							(fname, "char[]  stdio");
-	test_file_buffered_lined!(const(char)[])(fname, "const(char)[] device");	// sliceed line
-	test_file_buffered_lined!(string)		(fname, "string device");			// idup-ed line
+	test_std_lined							(fname,        "char[] std in ");
+	test_file_buffered_lined!(const(char)[])(fname, "const(char)[] dev in ");	// sliceed line
+	test_file_buffered_lined!(string)		(fname,        "string dev in ");	// idup-ed line
 }
