@@ -8,9 +8,10 @@ import std.stdio;
 version(Windows)
 {
 	import core.sys.windows.windows;
+	enum : uint { ERROR_BROKEN_PIPE = 109 }
 }
 
-version = MeasPerf;
+//version = MeasPerf;
 version (MeasPerf)
 {
 	import std.perf, std.file;
@@ -300,6 +301,12 @@ private:
 public:
 	/**
 	*/
+	this(HANDLE h)
+	{
+		hFile = h;
+		pRefCounter = new size_t();
+		*pRefCounter = 1;
+	}
 	this(string fname, in char[] mode = "r")
 	{
 		int share = FILE_SHARE_READ | FILE_SHARE_WRITE;
@@ -383,7 +390,15 @@ public:
 		}
 		else
 		{
-			debug(File)
+			switch (GetLastError())
+			{
+			case ERROR_BROKEN_PIPE:
+				return false;
+			default:
+				break;
+			}
+			
+			//debug(File)
 				writefln("pull ng : hFile=%08X, size=%s, GetLastError()=%s",
 					cast(uint)hFile, size, GetLastError());
 			throw new Exception("pull(ref buf[]) error");
@@ -436,6 +451,19 @@ unittest
 	static assert(isDevice!File);
 	//assert(0);	// todo
 }
+
+/*shared */static this()
+{
+	din  = BufferedSource!File(GetStdHandle(STD_INPUT_HANDLE ), 2048);
+	dout = BufferedSink  !File(GetStdHandle(STD_OUTPUT_HANDLE), 2048);
+	derr = BufferedSink  !File(GetStdHandle(STD_ERROR_HANDLE ), 2048);
+}
+/*__gshared
+{*/
+	BufferedSource!File din;
+	BufferedSink  !File dout;
+	BufferedSink  !File derr;
+/*}*/
 
 /**
 構築済みのInputをBufferedで包むための補助関数
@@ -1212,6 +1240,45 @@ else
 }
 
 
+/**
+*/
+struct TextSource()
+{
+}
+
+/**
+*/
+struct TextSink()
+{
+}
+
+/**
+*/
+struct TextDevice()
+{
+	bool fetch()
+	{
+	}
+	@property const(Char)[] available() const
+	{
+	}
+	void consume(size_t n)
+	{
+	}
+	
+	@property Char[] usable()
+	{
+	}
+	void commit(size_t n)
+	{
+	}
+	bool flush()
+	{
+	}
+}
+
+
+
 //pragma(msg, "is( char : ubyte) = ", is( char : ubyte));
 //pragma(msg, "is(wchar : ubyte) = ", is(wchar : ubyte));
 //pragma(msg, "is(dchar : ubyte) = ", is(dchar : ubyte));
@@ -1633,15 +1700,43 @@ T* end(T)(T[] arr)
 	return arr.ptr + arr.length;
 }
 
-void main()
+void main(string[] args)
 {
   version (MeasPerf)
   {
 	version (MeasPerf_LinedIn)		doMeasPerf_LinedIn();
 	version (MeasPerf_BufferdOut)	doMeasPerf_BufferdOut();
   }
+
+/+
+	auto test_stdin  = File(GetStdHandle(STD_INPUT_HANDLE));
+
+	ubyte[] buffer;
+	buffer.length = 1024;
+	ubyte[] buf = buffer;
+
+	while (test_stdin.pull(buf))
+	{
+		write(buf.length ? "o" : "x");
+		writefln("buf.len=%s : %(%02X %)", buf.length, buf);
+	}
+	writefln("end");
++/
+	//auto din  = BufferedSource!File(GetStdHandle(STD_INPUT_HANDLE), 1024);
+
+	// output lines from stdandard input
+	foreach (line; lined!(const(char)[])(din))
+	{
+	//	writeln(line);
+		dout.put(cast(ubyte[])line);
+		dout.put(cast(ubyte[])"\r\n");
+		dout.flush();
+	
+	//	std.format.formattedWrite(dout, "%s\r\n", line);
+	}
 }
 
+version (MeasPerf)
 void doMeasPerf_LinedIn()
 {
 	void test_file_buffered_lined(String)(string fname, string msg)
@@ -1692,6 +1787,7 @@ void doMeasPerf_LinedIn()
 	test_file_buffered_lined!(string)		(fname,        "string dev in ");	// idup-ed line
 }
 
+version (MeasPerf)
 void doMeasPerf_BufferdOut()
 {
 	enum RemoveFile = true;
