@@ -11,12 +11,12 @@ version(Windows)
 	enum : uint { ERROR_BROKEN_PIPE = 109 }
 }
 
-//version = MeasPerf;
+version = MeasPerf;
 version (MeasPerf)
 {
 	import std.perf, std.file;
 	version = MeasPerf_LinedIn;
-	version = MeasPerf_BufferdOut;
+//	version = MeasPerf_BufferdOut;
 }
 
 /*
@@ -172,6 +172,8 @@ template isOutputPool(S)
 		}while (s.flush())
 	}()));
 }
+
+alias isInputPool isPool;
 
 alias isInputPool isPoolSource;
 alias isOutputPool isPoolSink;
@@ -462,13 +464,13 @@ unittest
 
 /*shared */static this()
 {
-	din  = BufferedSource!File(GetStdHandle(STD_INPUT_HANDLE ), 2048);
+//	din  = BufferedSource!File(GetStdHandle(STD_INPUT_HANDLE ), 2048);
 	dout = BufferedSink  !File(GetStdHandle(STD_OUTPUT_HANDLE), 2048);
 	derr = BufferedSink  !File(GetStdHandle(STD_ERROR_HANDLE ), 2048);
 }
 /*__gshared
 {*/
-	BufferedSource!File din;
+//	BufferedSource!File din;
 	BufferedSink  !File dout;
 	BufferedSink  !File derr;
 /*}*/
@@ -491,42 +493,43 @@ template Buffered(T)
 	else
 	{
 		static if (isSource!T)
-			alias BufferedSource!T Buffered;
+//			alias BufferedSource!T Buffered;
+			alias void Buffered;
 		static if (isSink!T)
 			alias BufferedSink!T Buffered;
 	}
 }
 
 /**
-InputとしてSource/配列/InputRangeを取り、ubyteのPool I/Fを提供する
+Sourceを取り、指定の型のPoolを提供する
 */
-struct BufferedSource(Input) if (isSource!Input)
+struct EncodedPool(Source, E) if (isSource!Source)
 {
 private:
-	Input input;
+	Source source;
 	ubyte[] buffer;
 	size_t ava_start = 0, ava_end = 0;
 
 private:
-	this(T)(T i, size_t bufferSize) if (is(T == Input))
+	this(S)(S s, size_t bufferSize) if (is(S == Source))
 	{
-		move(i, input);
-		buffer.length = bufferSize;
+		move(s, source);
+		buffer.length = E.sizeof * bufferSize;
 	}
 public:
 	/**
-	Inputにconstructionを委譲する
+	Sourceにconstructionを委譲する
 	Params:
-		args		= input constructor arguments
+		args		= source constructor arguments
 		bufferSize	= バッファリングされる要素数
 	*/
 	this(Args...)(Args args, size_t bufferSize)
 	{
-		__ctor(Input(args), bufferSize);	// delegate construction
+		__ctor(Source(args), bufferSize);	// delegate construction
 	}
 
 	/**
-	Interfaces of InputPool.
+	Interfaces of Pool.
 	*/
 	bool fetch()
 	body
@@ -536,18 +539,20 @@ public:
 			ava_start = ava_end = 0;
 		}
 		auto v = buffer[ava_end .. $];
-		auto result = input.pull(v);
+		auto result = source.pull(v);
 		if (result)
 		{
+			static if (E.sizeof > 1) assert(v.length % E.sizeof == 0);
 			ava_end += v.length;
 		}
 		return result;
 	}
 	
 	/// ditto
-	@property const(ubyte)[] available() const
+	@property const(E)[] available() const
 	{
-		return buffer[ava_start .. ava_end];
+		return cast(const(E)[]) buffer[ava_start .. ava_end];
+	//	return (cast(const(E)*)(buffer.ptr + ava_start))[0 .. (ava_end-ava_start)/E.sizeof];
 	}
 	
 	/// ditto
@@ -555,12 +560,12 @@ public:
 	in { assert(n <= available.length); }
 	body
 	{
-		ava_start += n;
+		ava_start += n * E.sizeof;
 	}
 }
 unittest
 {
-	static assert(isInputPool!(BufferedSource!File));
+	static assert(isPool!(EncodedPool!(File, char)));
 	//assert(0);	// todo
 }
 
@@ -1361,6 +1366,7 @@ struct TextDevice()
 		lined!string(buffered(File("foo.txt")))
 		lined!(const(char))("foo\nbar\nbaz", "\n")
 */
+/+
 auto lined(String=string, R)(R r)
 {
 	return Lined!(R, dstring, String)(move(r), cast(dstring)NativeNewLine);
@@ -1370,6 +1376,16 @@ auto lined(String=string, R, Delim)(R r, in Delim delim)
 {
 	return Lined!(R, Delim, String)(move(r), move(delim));
 }
++/
+
+auto lined(String=string, Source)(Source source, size_t bufferSize) if (isSource!Source)
+{
+	alias Unqual!(typeof(String.init[0])) Char;
+	
+	auto pool = EncodedPool!(File, char)(move(source), bufferSize);
+	return Lined!(typeof(pool), dstring, String)(move(pool), cast(dstring)NativeNewLine);
+}
+
 
 /**
 	string Rangeを取り、String型の行Rangeを返す
@@ -1394,7 +1410,7 @@ auto lined(String=string, R, Delim)(R r, in Delim delim)
 	より抽象的な表現
 	InputからDelimを区切りとして、Inputの要素配列を切り出す
 */
-struct Lined(Input, Delim, String : Char[], Char)
+struct Lined(Pool, Delim, String : Char[], Char)
 /+	if (is(typeof(
 	{
 		void dummy(ref Appender!(Unqual!Char[]) app, ref Input r)
@@ -1403,24 +1419,25 @@ struct Lined(Input, Delim, String : Char[], Char)
 		}
 	}())))	// →Inputの要素をmutableな配列にコピーできるか
 +/
-	if (isSomeChar!Char)
+	if (isPool!Pool && isSomeChar!Char)
 {
 //	static assert(isInputPool!Input && is(PoolElementType!Input : const(ubyte)) && is(Char : const(char)));
 
 private:
-	Input input;
+	alias Unqual!Char MutableChar;
+
+	Pool pool;
 	Delim delim;
-	Appender!(Unqual!Char[]) buffer;	// trivial: reduce initializing const of appender
-//	Appender!(Unqual!ubyte[]) buffer;	// trivial: reduce initializing const of appender
+	Appender!(MutableChar[]) buffer;	// trivial: reduce initializing const of appender
 	String line;
 	bool eof;
 
 public:
 	/**
 	*/
-	this(Input r, Delim d)
+	this(Pool p, Delim d)
 	{
-		move(r, input);
+		move(p, pool);
 		move(d, delim);
 		popFront();
 	}
@@ -1444,17 +1461,18 @@ public:
 	in { assert(!empty); }
 	body
 	{
-		const(Char)[] view;
+		const(MutableChar)[] view;
+		const(MutableChar)[] nextline;
 		
 		bool fetchExact()	// fillAvailable?
 		{
-			view = input.available;
+			view = pool.available;
 			while (view.length == 0)
 			{
 				//writefln("fetched");
-				if (!input.fetch())
+				if (!pool.fetch())
 					return false;
-				view = input.available;
+				view = pool.available;
 			}
 			return true;
 		}
@@ -1468,8 +1486,11 @@ public:
 		{
 			if (vlen == view.length)
 			{
-				line = /*cast(String)*/(buffer.put(view), buffer.data);
-				input.consume(vlen);
+//				nextline = cast(String)(buffer.put(view), buffer.data);
+//				nextline = /*cast(String)*/(buffer.put(view), buffer.data);
+				foreach (c; view) buffer.put(c);	//buffer.put(view);	// Appender.putがchar[]をRangeとして扱うのでdecodeが動いてしまう
+				nextline = /*cast(String)*/buffer.data;
+				pool.consume(vlen);
 				if (!fetchExact())
 					break;
 				
@@ -1488,12 +1509,16 @@ public:
 					if (buffer.data.length)
 					{
 						//writefln("%s@%s : %s %s %s %s", __FILE__, __LINE__, view, view.length, vlen, dlen);
-						line = /*cast(String)*/(buffer.put(view[0 .. vlen]), buffer.data[0 .. $ - dlen]);
+//						nextline = cast(String)(buffer.put(view[0 .. vlen]), buffer.data[0 .. $ - dlen]);
+//						nextline = /*cast(String)*/(buffer.put(view[0 .. vlen]), buffer.data[0 .. $ - dlen]);
+						foreach (c; view[0 .. vlen]) buffer.put(c);
+						nextline = /*cast(String)*/(buffer.data[0 .. $ - dlen]);
 					}
 					else
-						line = /*cast(String)*/view[0 .. vlen - dlen];
+//						nextline = cast(String)view[0 .. vlen - dlen];
+						nextline = /*cast(String)*/view[0 .. vlen - dlen];
 					
-					input.consume(vlen);
+					pool.consume(vlen);
 					break;
 				}
 			}
@@ -1502,7 +1527,9 @@ public:
 		}
 		
 	  static if (is(Char == immutable))
-		line = line.idup;
+		line = nextline.idup;
+	  else
+		line = nextline;
 	}
 
 
@@ -1797,6 +1824,7 @@ void main(string[] args)
 +/
 	//auto din  = BufferedSource!File(GetStdHandle(STD_INPUT_HANDLE), 1024);
 
+/+
 	auto text_din  = TextSource!(typeof(din), char)(din);
 //	auto text_dout = TextSink!(typeof(dout), char)(dout);
 
@@ -1812,6 +1840,17 @@ void main(string[] args)
 	//	std.format.formattedWrite(dout, "%s\r\n", line);
 //		std.format.formattedWrite(text_dout, "%s\n", line);
 	}
++/
+
+/+
+	auto din = File(GetStdHandle(STD_INPUT_HANDLE));
+	auto char_din = EncodedPool!(File, char)(din, 1024);
+	auto lined_din = Lined!(typeof(char_din), string, const(char)[])(char_din, "\r\n");
+	foreach (line; lined_din)
+	{
+		writeln("> ", line);
+	}
++/
 }
 
 version (MeasPerf)
@@ -1826,7 +1865,7 @@ void doMeasPerf_LinedIn()
 		pc.start;
 		{	foreach (i; 0 .. 100)
 			{
-				auto f = lined!String(BufferedSource!(device.File)(fname, 2048));
+				auto f = lined!String(device.File(fname), 2048);
 				foreach (line; f)
 				{
 					line.dup, ++nlines;
