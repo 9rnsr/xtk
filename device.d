@@ -173,6 +173,14 @@ template isOutputPool(S)
 	}()));
 }
 
+alias isInputPool isPoolSource;
+alias isOutputPool isPoolSink;
+
+template isPoolDevice(S)
+{
+	enum isPoolDevice = isPoolSource!S && isPoolSink!S;
+}
+
 /**
 */
 template PoolElementType(S)
@@ -628,21 +636,9 @@ public:
 	/**
 		OutputRange I/F
 	*/
-	void put(ubyte[] data)
-	out {assert(usable.length > 0); }
-	body
+	void put(const(ubyte)[] data)
 	{
-		while (data.length > 0)
-		{
-			if (usable.length == 0)
-				flush();
-			auto len = min(data.length, usable.length);
-			usable[0 .. len] = data[0 .. len];
-			data = data[len .. $];
-			commit(len);
-		}
-		if (usable.length == 0)
-			flush();
+		.put(this, data);
 	}
 }
 unittest
@@ -805,21 +801,9 @@ public:
 	/**
 		OutputRange I/F
 	*/
-	void put(ubyte[] data)
-	out {assert(usable.length > 0); }
-	body
+	void put(const(ubyte)[] data)
 	{
-		while (data.length > 0)
-		{
-			if (usable.length == 0)
-				flush();
-			auto len = min(data.length, usable.length);
-			usable[0 .. len] = data[0 .. len];
-			data = data[len .. $];
-			commit(len);
-		}
-		if (usable.length == 0)
-			flush();
+		.put(this, data);
 	}
 }
 unittest
@@ -933,6 +917,27 @@ unittest
 }+/
 
 /**
+	OutputRange I/F
+	Native implement for PoolSink
+*/
+void put(Sink, T)(Sink sink, const(T)[] data) if (isPoolSink!Sink)
+out {assert(sink.usable.length > 0); }
+body
+{
+	while (data.length > 0)
+	{
+		if (sink.usable.length == 0)
+			sink.flush();
+		auto len = min(data.length, sink.usable.length);
+		sink.usable[0 .. len] = data[0 .. len];
+		data = data[len .. $];
+		sink.commit(len);
+	}
+	if (sink.usable.length == 0)
+		sink.flush();
+}
+
+/**
 構築済みのInputをRangedで包むための補助関数
 */
 Ranged!Device ranged(Device)(Device device)
@@ -1000,7 +1005,7 @@ public:
 	/**
 	Interface of output range.
 	*/
-	void put(ubyte[] data)
+	void put(const(ubyte)[] data)
 	{
 		device.put(data);
 	}
@@ -1242,14 +1247,82 @@ else
 
 /**
 */
-struct TextSource()
+struct TextSource(Source, Char) if (isPoolSource!Source && is(Char == char))
 {
+private:
+	Source source;
+
+private:
+	this(T)(T s) if (is(T == Source))
+	{
+		move(s, source);
+	}
+public:
+	/**
+	Deviceにconstructionを委譲する
+	Params:
+		args		= device constructor arguments
+	*/
+	this(Args...)(Args args)
+	{
+		__ctor(Source(args));
+	}
+
+	bool fetch()
+	{
+		return source.fetch();
+	}
+	@property const(Char)[] available() const
+	{
+		return cast(const(Char)[])source.available;
+	}
+	void consume(size_t n)
+	{
+		source.consume(n);
+	}
 }
 
 /**
 */
-struct TextSink()
+struct TextSink(Sink, Char) if (isPoolSink!Sink && is(Char == char))
 {
+private:
+	Sink sink;
+
+	this(S)(S s) if (is(S == Sink))
+	{
+		move(s, sink);
+	}
+public:
+	this(Args...)(Args args)
+	{
+		__ctor(Sink(args));
+	}
+
+	@property Char[] usable()
+	{
+		return cast(Char[])sink.usable;
+	}
+	void commit(size_t n)
+	{
+		foreach (i; 0 .. n)
+		{
+			if (sink.usable[i] == '\n')
+				sink.flush();
+		}
+		sink.commit(n);
+	}
+	bool flush()
+	{
+	}
+
+	/**
+		OutputRange I/F
+	*/
+	void put(const(Char)[] data)
+	{
+		sink.put(cast(const(ubyte)[])data);
+	}
 }
 
 /**
@@ -1332,13 +1405,13 @@ struct Lined(Input, Delim, String : Char[], Char)
 +/
 	if (isSomeChar!Char)
 {
-	static assert(isInputPool!Input && is(PoolElementType!Input : const(ubyte)) && is(Char : const(char)));
+//	static assert(isInputPool!Input && is(PoolElementType!Input : const(ubyte)) && is(Char : const(char)));
 
 private:
 	Input input;
 	Delim delim;
-//	Appender!(Unqual!Char[]) buffer;	// trivial: reduce initializing const of appender
-	Appender!(Unqual!ubyte[]) buffer;	// trivial: reduce initializing const of appender
+	Appender!(Unqual!Char[]) buffer;	// trivial: reduce initializing const of appender
+//	Appender!(Unqual!ubyte[]) buffer;	// trivial: reduce initializing const of appender
 	String line;
 	bool eof;
 
@@ -1371,7 +1444,7 @@ public:
 	in { assert(!empty); }
 	body
 	{
-		const(ubyte)[] view;
+		const(Char)[] view;
 		
 		bool fetchExact()	// fillAvailable?
 		{
@@ -1395,7 +1468,7 @@ public:
 		{
 			if (vlen == view.length)
 			{
-				line = cast(String)(buffer.put(view), buffer.data);
+				line = /*cast(String)*/(buffer.put(view), buffer.data);
 				input.consume(vlen);
 				if (!fetchExact())
 					break;
@@ -1415,10 +1488,10 @@ public:
 					if (buffer.data.length)
 					{
 						//writefln("%s@%s : %s %s %s %s", __FILE__, __LINE__, view, view.length, vlen, dlen);
-						line = cast(String)(buffer.put(view[0 .. vlen]), buffer.data[0 .. $ - dlen]);
+						line = /*cast(String)*/(buffer.put(view[0 .. vlen]), buffer.data[0 .. $ - dlen]);
 					}
 					else
-						line = cast(String)view[0 .. vlen - dlen];
+						line = /*cast(String)*/view[0 .. vlen - dlen];
 					
 					input.consume(vlen);
 					break;
@@ -1724,15 +1797,20 @@ void main(string[] args)
 +/
 	//auto din  = BufferedSource!File(GetStdHandle(STD_INPUT_HANDLE), 1024);
 
+	auto text_din  = TextSource!(typeof(din), char)(din);
+//	auto text_dout = TextSink!(typeof(dout), char)(dout);
+
 	// output lines from stdandard input
-	foreach (line; lined!(const(char)[])(din))
+	foreach (line; lined!(const(char)[])(text_din))
 	{
-	//	writeln(line);
-		dout.put(cast(ubyte[])line);
-		dout.put(cast(ubyte[])"\r\n");
-		dout.flush();
-	
+		writeln(line);
+		
+	//	dout.put(cast(ubyte[])line);
+	//	dout.put(cast(ubyte[])"\r\n");
+	//	dout.flush();
+		
 	//	std.format.formattedWrite(dout, "%s\r\n", line);
+//		std.format.formattedWrite(text_dout, "%s\n", line);
 	}
 }
 
