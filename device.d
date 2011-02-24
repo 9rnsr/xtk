@@ -19,6 +19,24 @@ version (MeasPerf)
 //	version = MeasPerf_BufferdOut;
 }
 
+/+unittest	// bug of std.array.Appender.put
+{
+	alias Appender!(char[]) App;
+	
+	{	App app;
+		app.put("\xE3");	//invariant(char)[] -> fail
+		assert(app.data == "\xE3");
+	}
+	{	App app;
+		app.put(cast(const(char)[])"\xE3");	//const(char) -> fail
+		assert(app.data == "\xE3");
+	}
+	{	App app;
+		app.put(cast(char[])"\xE3");	//char[] -> ok
+		assert(app.data == "\xE3");
+	}
+}+/
+
 /*
 	std.file.File.ByChunkの問題点：
 		ubyte[]のレンジである
@@ -1488,7 +1506,8 @@ public:
 			{
 //				nextline = cast(String)(buffer.put(view), buffer.data);
 //				nextline = /*cast(String)*/(buffer.put(view), buffer.data);
-				foreach (c; view) buffer.put(c);	//buffer.put(view);	// Appender.putがchar[]をRangeとして扱うのでdecodeが動いてしまう
+				//foreach (c; view) buffer.put(c);	//buffer.put(view);
+				buffer.put(cast(MutableChar[])view);	//Generic input rangeとして扱わせないためのworkaround
 				nextline = /*cast(String)*/buffer.data;
 				pool.consume(vlen);
 				if (!fetchExact())
@@ -1511,7 +1530,8 @@ public:
 						//writefln("%s@%s : %s %s %s %s", __FILE__, __LINE__, view, view.length, vlen, dlen);
 //						nextline = cast(String)(buffer.put(view[0 .. vlen]), buffer.data[0 .. $ - dlen]);
 //						nextline = /*cast(String)*/(buffer.put(view[0 .. vlen]), buffer.data[0 .. $ - dlen]);
-						foreach (c; view[0 .. vlen]) buffer.put(c);
+						//foreach (c; view[0 .. vlen]) buffer.put(c);
+						buffer.put(cast(MutableChar[])view[0 .. vlen]);	//Generic input rangeとして扱わせないためのworkaround
 						nextline = /*cast(String)*/(buffer.data[0 .. $ - dlen]);
 					}
 					else
