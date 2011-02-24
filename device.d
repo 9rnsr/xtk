@@ -519,7 +519,7 @@ template Buffered(T)
 }
 
 /**
-Sourceを取り、指定の型のPoolを提供する
+Sourceのバイト列をEのバイト表現と見なすPoolを提供する
 */
 struct EncodedPool(Source, E) if (isSource!Source)
 {
@@ -528,22 +528,11 @@ private:
 	ubyte[] buffer;
 	size_t ava_start = 0, ava_end = 0;
 
-private:
-	this(S)(S s, size_t bufferSize) if (is(S == Source))
+public:
+	this(Source s, size_t bufferSize)
 	{
 		move(s, source);
 		buffer.length = E.sizeof * bufferSize;
-	}
-public:
-	/**
-	Sourceにconstructionを委譲する
-	Params:
-		args		= source constructor arguments
-		bufferSize	= バッファリングされる要素数
-	*/
-	this(Args...)(Args args, size_t bufferSize)
-	{
-		__ctor(Source(args), bufferSize);	// delegate construction
 	}
 
 	/**
@@ -1381,65 +1370,34 @@ struct TextDevice()
 
 /**
 	Examples:
-		lined!string(buffered(File("foo.txt")))
-		lined!(const(char))("foo\nbar\nbaz", "\n")
+		lined!string(File("foo.txt"))
+	//	lined!(const(char))("foo\nbar\nbaz", "\n")
 */
-/+
-auto lined(String=string, R)(R r)
+auto lined(String=string, Source)(Source source, size_t bufferSize=2048)
+	if (isSource!Source)
 {
-	return Lined!(R, dstring, String)(move(r), cast(dstring)NativeNewLine);
+	alias Unqual!(typeof(String.init[0]))   Char;
+	alias EncodedPool!(File, Char)          Pool;
+	alias Lined!(Pool, String, String) LinedType;
+	return LinedType(Pool(move(source), bufferSize), cast(String)NativeNewLine);
 }
-/// ditto
-auto lined(String=string, R, Delim)(R r, in Delim delim)
+auto lined(String=string, Source, Delim)(Source source, in Delim delim, size_t bufferSize=2048)
+	if (isSource!Source && isInputRange!Delim)
 {
-	return Lined!(R, Delim, String)(move(r), move(delim));
-}
-+/
-
-auto lined(String=string, Source)(Source source, size_t bufferSize) if (isSource!Source)
-{
-	alias Unqual!(typeof(String.init[0])) Char;
-	
-	auto pool = EncodedPool!(File, char)(move(source), bufferSize);
-	return Lined!(typeof(pool), dstring, String)(move(pool), cast(dstring)NativeNewLine);
+	alias Unqual!(typeof(String.init[0]))   Char;
+	alias EncodedPool!(File, Char)          Pool;
+	alias Lined!(Pool, Delim, String)  LinedType;
+	return LinedType(Pool(move(source), bufferSize), move(delim));
 }
 
 
 /**
-	string Rangeを取り、String型の行Rangeを返す
-	
-	As Source
-		Tがmutableなとき
-		String == T[] || String == const(T)[]
-			frontが返す配列の要素の値は次のpopFrontを呼ぶまで保障される
-			必要ならdupやidupを呼ぶこと
-		String == immutable(T)
-			frontが返す配列の要素の値は不変
-	
-	As Sink
-		lineへの書き込みが行える場合(String == T[])の挙動
-		o	書き換えられるが、値の寿命は次のpopFrontまで
-		x	書き換えによってオリジナルのSink(Fileなど)への書き込みが行われる
-	
-	別名ByLine
-	
-	
-	//----
-	より抽象的な表現
-	InputからDelimを区切りとして、Inputの要素配列を切り出す
+CharのPoolを取り、Delimを区切りとして切り出されたLineのInputRangeを構成する
 */
 struct Lined(Pool, Delim, String : Char[], Char)
-/+	if (is(typeof(
-	{
-		void dummy(ref Appender!(Unqual!Char[]) app, ref Input r)
-		{
-			app.put(r.front);
-		}
-	}())))	// →Inputの要素をmutableな配列にコピーできるか
-+/
 	if (isPool!Pool && isSomeChar!Char)
 {
-//	static assert(isInputPool!Input && is(PoolElementType!Input : const(ubyte)) && is(Char : const(char)));
+	static assert(is(Unqual!(PoolElementType!Pool) == Unqual!(Char)));
 
 private:
 	alias Unqual!Char MutableChar;
@@ -1504,11 +1462,8 @@ public:
 		{
 			if (vlen == view.length)
 			{
-//				nextline = cast(String)(buffer.put(view), buffer.data);
-//				nextline = /*cast(String)*/(buffer.put(view), buffer.data);
-				//foreach (c; view) buffer.put(c);	//buffer.put(view);
 				buffer.put(cast(MutableChar[])view);	//Generic input rangeとして扱わせないためのworkaround
-				nextline = /*cast(String)*/buffer.data;
+				nextline = buffer.data;
 				pool.consume(vlen);
 				if (!fetchExact())
 					break;
@@ -1519,7 +1474,6 @@ public:
 			
 			auto e = view[vlen];
 			++vlen;
-			//writef("%02X ", e);
 			if (e == delim[dlen])
 			{
 				++dlen;
@@ -1527,16 +1481,11 @@ public:
 				{
 					if (buffer.data.length)
 					{
-						//writefln("%s@%s : %s %s %s %s", __FILE__, __LINE__, view, view.length, vlen, dlen);
-//						nextline = cast(String)(buffer.put(view[0 .. vlen]), buffer.data[0 .. $ - dlen]);
-//						nextline = /*cast(String)*/(buffer.put(view[0 .. vlen]), buffer.data[0 .. $ - dlen]);
-						//foreach (c; view[0 .. vlen]) buffer.put(c);
 						buffer.put(cast(MutableChar[])view[0 .. vlen]);	//Generic input rangeとして扱わせないためのworkaround
-						nextline = /*cast(String)*/(buffer.data[0 .. $ - dlen]);
+						nextline = (buffer.data[0 .. $ - dlen]);
 					}
 					else
-//						nextline = cast(String)view[0 .. vlen - dlen];
-						nextline = /*cast(String)*/view[0 .. vlen - dlen];
+						nextline = view[0 .. vlen - dlen];
 					
 					pool.consume(vlen);
 					break;
@@ -1551,13 +1500,6 @@ public:
 	  else
 		line = nextline;
 	}
-
-
-/+
-  static if (isOutputRange!(Input, String))
-	void put()
-	{
-	}+/
 }
 /+unittest
 {
