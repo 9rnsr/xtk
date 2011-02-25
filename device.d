@@ -1,4 +1,14 @@
 ﻿/**
+
+Source,Pool,Sinkの3つを基本I/Fと置く
+(バッファリングされたSinkを明示的に扱う手段はなくす)
+
+それぞれがやり取りする要素の型は任意だが、Fileはubyteをやり取りする
+(D言語的にはvoid[]でもいいかも)
+
+Encodedはubyteを任意型にcastする機能を提供する
+Bufferedはバッファリングを行う
+
 */
 //module std.device;
 module device;
@@ -8,9 +18,10 @@ import std.stdio;
 version(Windows)
 {
 	import core.sys.windows.windows;
+	enum : uint { ERROR_BROKEN_PIPE = 109 }
 }
 
-version = MeasPerf;
+//version = MeasPerf;
 version (MeasPerf)
 {
 	import std.perf, std.file;
@@ -100,13 +111,40 @@ $(DDOC_DECL_DD
 */
 template isSource(S)
 {
+//	__traits(allMembers, T)にはstatic ifで切られたものも含まれている…
+//	enum isSource = hasMember!(S, "pull");
+	enum isSource = __traits(hasMember, S, "pull");
+}
+
+///ditto
+template isSource(S, E)
+{
 	enum isSource = is(typeof({
 		S s;
-		ubyte[] buf;
+		E[] buf;
 		while(s.pull(buf))
 		{
 			// ...
 		} 
+	}()));
+}
+
+/**
+In definition, initial state of pool has 0 length $(D available).$(BR)
+定義では、poolの初期状態は長さ0の$(D available)を持つ。$(BR)
+You can assume that pool is not $(D fetch)-ed yet.$(BR)
+これはpoolがまだ一度も$(D fetch)されたことがないと見なすことができる。$(BR)
+*/
+template isPool(S)
+{
+	enum isPool = is(typeof({
+		S s;
+		while (s.fetch())
+		{
+			auto buf = s.available;
+			size_t n;
+			s.consume(n);
+		}
 	}()));
 }
 
@@ -116,9 +154,17 @@ primitive $(D push).
 */
 template isSink(S)
 {
+//	__traits(allMembers, T)にはstatic ifで切られたものも含まれている…
+//	enum isSink = hasMember!(S, "push");
+	enum isSink = __traits(hasMember, S, "push");
+}
+
+///ditto
+template isSink(S, E)
+{
 	enum isSink = is(typeof({
 		S s;
-		const(ubyte)[] buf;
+		const(E)[] buf;
 		do
 		{
 			// ...
@@ -134,32 +180,11 @@ template isDevice(S)
 	enum isDevice = isSource!S && isSink!S;
 }
 
-/**
-
-In definition, initial state of pool has 0 length $(D available).$(BR)
-定義では、poolの初期状態は長さ0の$(D available)を持つ。$(BR)
-You can assume that pool is not $(D fetch)-ed yet.$(BR)
-これはpoolがまだ一度も$(D fetch)されたことがないと見なすことができる。$(BR)
-
-Basic element of sink is ubyte.
-
-*/
-template isInputPool(S)
-{
-	enum isInputPool = is(typeof({
-		S s;
-		while (s.fetch())
-		{
-			auto buf = s.available;
-			size_t n;
-			s.consume(n);
-		}
-	}()));
-}
+deprecated alias isPool isInputPool;
 
 /**
 */
-template isOutputPool(S)
+deprecated template isOutputPool(S)
 {
 	enum isOutputPool = is(typeof({
 		S s;
@@ -172,9 +197,17 @@ template isOutputPool(S)
 	}()));
 }
 
+/+
+alias isInputPool isPoolSource;
+alias isOutputPool isPoolSink;
+template isPoolDevice(S)
+{
+	enum isPoolDevice = isPoolSource!S && isPoolSink!S;
+}+/
+
 /**
 */
-template PoolElementType(S)
+/+template PoolElementType(S)
 {
 //	  static if (isDevice)
 //		static assert(is(S.init.available[0] == s.init.usable[0]));
@@ -183,6 +216,18 @@ template PoolElementType(S)
 		alias typeof(S.init.available[0]) PoolElementType;
 	static if (isOutputPool!S)
 		alias typeof(S.init.usable[0]) PoolElementType;
+}+/
+template ElementType(S)
+	if (isSource!S || isPool!S || isSink!S)
+{
+	static if (isSource!S)
+		alias Unqual!(typeof(ParameterTypeTuple!(typeof(S.init.pull))[0].init[0])) ElementType;
+	static if (isPool!S)
+		alias Unqual!(typeof(S.init.available[0])) ElementType;
+	static if (isSink!S)
+	{
+		alias Unqual!(typeof(ParameterTypeTuple!(typeof(S.init.push))[0].init[0])) ElementType;
+	}
 }
 
 // seek whence...
@@ -192,19 +237,17 @@ enum SeekPos {
 	End
 }
 
-/+/*
+/**
 	Check that S is seekable source or sink.
 	Seekable source/sink supports seek operation.
 */
 template isSeekable(S)
 {
 	enum isSeekable = is(typeof({
-		void dummy(ref S s)
-		{
-			s.seek(0, SeekPos.Set);
-		}
+		S s;
+		s.seek(0, SeekPos.Set);
 	}()));
-}+/
+}
 
 
 /+
@@ -300,6 +343,12 @@ private:
 public:
 	/**
 	*/
+	this(HANDLE h)
+	{
+		hFile = h;
+		pRefCounter = new size_t();
+		*pRefCounter = 1;
+	}
 	this(string fname, in char[] mode = "r")
 	{
 		int share = FILE_SHARE_READ | FILE_SHARE_WRITE;
@@ -383,7 +432,15 @@ public:
 		}
 		else
 		{
-			debug(File)
+			switch (GetLastError())
+			{
+			case ERROR_BROKEN_PIPE:
+				return false;
+			default:
+				break;
+			}
+			
+			//debug(File)
 				writefln("pull ng : hFile=%08X, size=%s, GetLastError()=%s",
 					cast(uint)hFile, size, GetLastError());
 			throw new Exception("pull(ref buf[]) error");
@@ -438,6 +495,404 @@ unittest
 }
 
 /**
+*/
+template Sourced(Device)
+{
+  static if (isDevice!Device)
+  {
+	struct Sourced
+	{
+	private:
+		alias ElementType!Device E;
+		Device device;
+	
+	public:
+		this(A...)(A args)
+		{
+			move(Device(args), device);
+		}
+	
+		bool pull(ref E[] buf)
+		{
+			return device.pull(buf);
+		}
+	}
+  }
+  else static if (isSource!Device)
+	alias Device Sourced;
+  else
+	static assert(0, "Cannot limit "~Device.stringof~" as source");
+}
+
+/**
+*/
+template Sinked(Device)
+{
+  static if (isDevice!Device)
+  {
+	struct Sinked
+	{
+	private:
+		alias ElementType!Device E;
+		Device device;
+	
+	public:
+		/**
+		Delegate construction to $(D Device).
+		*/
+		this(A...)(A args)
+		{
+			move(Device(args), device);
+		}
+	
+		bool push(ref const(E)[] buf)
+		{
+			return device.push(buf);
+		}
+	}
+  }
+  else static if (isSink!Device)
+	alias Device Sinked;
+  else
+	static assert(0, "Cannot limit "~Device.stringof~" as sink");
+}
+
+
+/**
+*/
+Encoded!(Device, E) encoded(E, Device)(Device device)
+{
+	return typeof(return)(move(device));
+}
+
+/**
+*/
+struct Encoded(Device, E)
+{
+private:
+	Device device;
+//	pragma(msg, "Encoded!(", Device, ", ", E, ") :");
+//	pragma(msg, "  isSource!Device = ", isSource!Device);
+//	pragma(msg, "  isPool  !Device = ", isPool  !Device);
+//	pragma(msg, "  isSink  !Device = ", isSink  !Device);
+
+public:
+	this(Device d)
+	{
+		move(d, device);
+	}
+	
+/+static if (isSink!Device && isPool!Device)
+	~this()
+	{
+		device.flush();
+	}+/
+
+  static if (isSource!Device)
+	bool pull(ref E[] buf)
+	{
+		auto v = cast(ubyte[])buf;
+		auto result = device.pull(v);
+		if (result)
+		{
+			static if (E.sizeof > 1) assert(v.length % E.sizeof == 0);
+			buf = cast(E[])v;
+		}
+		return result;
+	}
+
+  static if (isPool!Device)
+  {
+	/**
+	Interfaces of Pool.
+	*/
+	bool fetch()
+	{
+		return device.fetch();
+	}
+	
+	/// ditto
+	@property const(E)[] available() const
+	{
+		return cast(const(E)[])device.available;
+	}
+	
+	/// ditto
+	void consume(size_t n)
+	{
+		device.consume(E.sizeof * n);
+	}
+  }
+
+/+  static if (isSink!Device)
+	/**
+	Interfaces of OutputPool.
+	*/
+	@property E[] usable()
+	{
+		return cast(E[])device.usable;
+	}
+  static if (isSink!Device)
+	private @property const(E)[] reserves()
+	{
+		return cast(E[])device.reserves;
+	}
+	
+  static if (isSink!Device)
+	/// ditto
+	void commit(size_t n)
+	{
+		return device.commit(E.sizeof * n);
+	}
+	
+  static if (isSink!Device)
+	/// ditto
+	bool flush()
+	{
+		return device.flush();
+	}+/
+
+  static if (isSink!Device)
+	/**
+	Interface of Sink
+	*/
+	bool push(ref const(E)[] data)
+	{
+		auto v = cast(const(ubyte)[])data;
+		auto result = device.push(v);
+		static if (E.sizeof > 1) assert(v.length % E.sizeof == 0);
+		data = data[$ - v.length / E.sizeof .. $];
+		return result;
+	}
+
+  static if (isSeekable!Device)
+	ulong seek(long offset, SeekPos whence)
+	{
+		return device.seek(offset, whence);
+	}
+}
+
+/**
+*/
+Buffered!(Device) buffered(Device)(Device device, size_t bufferSize)
+{
+	return typeof(return)(move(device), bufferSize);
+}
+
+/**
+*/
+struct Buffered(Device)
+//	if (isDevice!Device)					// Bufferedの側でSource/Sink/Deviceを明示して区別する
+//	if (isSource!Device || isSink!Device)	// オリジナルのdeviceに応じて最大公約数のI/Fを提供する
+	if (isSource!Device/* || isPool!Device*/ || isSink!Device)
+{
+private:
+	alias ElementType!Device E;
+//	pragma(msg, "Buffered!(", Device, ") : E = ", E);
+//	pragma(msg, "  isSource!Device = ", isSource!Device);
+//	pragma(msg, "  isPool  !Device = ", isPool  !Device);
+//	pragma(msg, "  isSink  !Device = ", isSink  !Device);
+
+	Device device;
+//	ubyte[] buffer;
+	E[] buffer;
+	static if (isSink  !Device) size_t rsv_start = 0, rsv_end = 0;
+	static if (isSource!Device) size_t ava_start = 0, ava_end = 0;
+	static if (isDevice!Device) long base_pos = 0;
+
+private:
+	this(T)(T d, size_t bufferSize) if (is(T == Device))
+	{
+		move(d, device);
+		buffer.length = bufferSize;
+	}
+public:
+	/**
+	Deviceにconstructionを委譲する
+	Params:
+		args		= device constructor arguments
+		bufferSize	= バッファリングされる要素数
+	*/
+	this(Args...)(Args args, size_t bufferSize)
+	{
+		__ctor(Device(args), bufferSize);
+	}
+	
+  static if (isSink!Device)
+	~this()
+	{
+		while (reserves.length > 0)
+			flush();
+	}
+
+  static if (isSource!Device)
+	/**
+	Interfaces of Pool.
+	*/
+	bool fetch()
+	body
+	{
+	  static if (isDevice!Device)
+		bool empty_reserves = (reserves.length == 0);
+	  else
+		enum empty_reserves = true;
+		
+		if (empty_reserves && available.length == 0)
+		{
+			static if (isDevice!Device)	base_pos += ava_end;
+			static if (isDevice!Device)	rsv_start = rsv_end = 0;
+										ava_start = ava_end = 0;
+		}
+		
+	  static if (isDevice!Device)
+		device.seek(base_pos + ava_end, SeekPos.Set);
+		
+		auto v = buffer[ava_end .. $];
+		auto result =  device.pull(v);
+		if (result)
+		{
+			ava_end += v.length;
+		}
+		return result;
+	}
+	
+  static if (isSource!Device)
+	/// ditto
+	@property const(E)[] available() const
+	{
+		return buffer[ava_start .. ava_end];
+	}
+	
+  static if (isSource!Device)
+	/// ditto
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		ava_start += n;
+	}
+
+static if (isSink!Device) private
+{
+	@property E[] usable()
+	{
+	  static if (isDevice!Device)
+		return buffer[ava_start .. $];
+	  else
+		return buffer[rsv_end .. $];
+	}
+	private @property const(E)[] reserves()
+	{
+		return buffer[rsv_start .. rsv_end];
+	}
+	
+	void commit(size_t n)
+	{
+	  static if (isDevice!Device)
+	  {
+		assert(ava_start + n <= buffer.length);
+		ava_start += n;
+		ava_end = max(ava_end, ava_start);
+		rsv_end = ava_start;
+	  }
+	  else
+	  {
+		assert(rsv_end + n <= buffer.length);
+		rsv_end += n;
+	  }
+	}
+}
+	
+  static if (isSink!Device)
+	/// ditto
+	bool flush()
+	in { assert(reserves.length > 0); }
+	body
+	{
+	  static if (isDevice!Device)
+		device.seek(base_pos + rsv_start, SeekPos.Set);
+		
+		auto rsv = buffer[rsv_start .. rsv_end];
+		auto result = device.push(rsv);
+		if (result)
+		{
+			rsv_start = rsv_end - rsv.length;
+			
+		  static if (isDevice!Device)
+			bool empty_available = (available.length == 0);
+		  else
+			enum empty_available = true;
+			
+			if (reserves.length == 0 && empty_available)
+			{
+				static if (isDevice!Device)	base_pos += ava_end;
+				static if (isDevice!Device)	ava_start = ava_end = 0;
+											rsv_start = rsv_end = 0;
+			}
+		}
+		return result;
+	}
+
+  static if (isSink!Device)
+	/**
+		OutputRange I/F
+	*/
+	bool push(const(E)[] data)
+	{
+	//	return device.push(data);
+		
+		while (data.length > 0)
+		{
+			if (usable.length == 0)
+				if (!flush()) goto Exit;
+			auto len = min(data.length, usable.length);
+			usable[0 .. len] = data[0 .. len];
+			data = data[len .. $];
+			commit(len);
+		}
+		if (usable.length == 0)
+			if (!flush()) goto Exit;
+		
+		return true;
+	  Exit:
+		return false;
+	}
+}
+
+
+/*shared */static this()
+{
+//	din  = BufferedSource!File(GetStdHandle(STD_INPUT_HANDLE ), 2048);
+//	dout = BufferedSink  !File(GetStdHandle(STD_OUTPUT_HANDLE), 2048);
+//	derr = BufferedSink  !File(GetStdHandle(STD_ERROR_HANDLE ), 2048);
+	din  = Sourced!File(GetStdHandle(STD_INPUT_HANDLE));
+	dout = Sinked !File(GetStdHandle(STD_OUTPUT_HANDLE));
+	derr = Sinked !File(GetStdHandle(STD_ERROR_HANDLE));
+}
+/*__gshared
+{*/
+//	BufferedSource!File din;
+//	BufferedSink  !File dout;
+//	BufferedSink  !File derr;
+	Sourced!File din;
+	Sinked !File dout;
+	Sinked !File derr;
+/*}*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/+/**
 構築済みのInputをBufferedで包むための補助関数
 */
 Buffered!Device buffered(Device)(Device dev, size_t bufferSize = 2048)
@@ -455,42 +910,32 @@ template Buffered(T)
 	else
 	{
 		static if (isSource!T)
-			alias BufferedSource!T Buffered;
+//			alias BufferedSource!T Buffered;
+			alias void Buffered;
 		static if (isSink!T)
 			alias BufferedSink!T Buffered;
 	}
-}
+}+/
 
-/**
-InputとしてSource/配列/InputRangeを取り、ubyteのPool I/Fを提供する
+/+/**
+Sourceのバイト列をEのバイト表現と見なすPoolを提供する
 */
-struct BufferedSource(Input) if (isSource!Input)
+struct EncodedPool(Source, E) if (isSource!Source)
 {
 private:
-	Input input;
+	Source source;
 	ubyte[] buffer;
 	size_t ava_start = 0, ava_end = 0;
 
-private:
-	this(T)(T i, size_t bufferSize) if (is(T == Input))
-	{
-		move(i, input);
-		buffer.length = bufferSize;
-	}
 public:
-	/**
-	Inputにconstructionを委譲する
-	Params:
-		args		= input constructor arguments
-		bufferSize	= バッファリングされる要素数
-	*/
-	this(Args...)(Args args, size_t bufferSize)
+	this(Source s, size_t bufferSize)
 	{
-		__ctor(Input(args), bufferSize);	// delegate construction
+		move(s, source);
+		buffer.length = E.sizeof * bufferSize;
 	}
 
 	/**
-	Interfaces of InputPool.
+	Interfaces of Pool.
 	*/
 	bool fetch()
 	body
@@ -500,18 +945,20 @@ public:
 			ava_start = ava_end = 0;
 		}
 		auto v = buffer[ava_end .. $];
-		auto result = input.pull(v);
+		auto result = source.pull(v);
 		if (result)
 		{
+			static if (E.sizeof > 1) assert(v.length % E.sizeof == 0);
 			ava_end += v.length;
 		}
 		return result;
 	}
 	
 	/// ditto
-	@property const(ubyte)[] available() const
+	@property const(E)[] available() const
 	{
-		return buffer[ava_start .. ava_end];
+		return cast(const(E)[]) buffer[ava_start .. ava_end];
+	//	return (cast(const(E)*)(buffer.ptr + ava_start))[0 .. (ava_end-ava_start)/E.sizeof];
 	}
 	
 	/// ditto
@@ -519,14 +966,166 @@ public:
 	in { assert(n <= available.length); }
 	body
 	{
-		ava_start += n;
+		ava_start += n * E.sizeof;
 	}
 }
 unittest
 {
-	static assert(isInputPool!(BufferedSource!File));
+	static assert(isPool!(EncodedPool!(File, char)));
 	//assert(0);	// todo
-}
+}+/
+
+/+/**
+ubyteのDeviceに対してEのバイト表現で入出力するDeviceを提供する
+*/
+struct EncodedPool2(Device, E)
+//	if (isDevice!Device)					// Bufferedの側でSource/Sink/Deviceを明示して区別する
+	if (isSource!Device || isSink!Device)	// オリジナルのdeviceに応じて最大公約数のI/Fを提供する
+{
+private:
+	Device device;
+	ubyte[] buffer;
+	static if (isSink  !Device) size_t rsv_start = 0, rsv_end = 0;
+	static if (isSource!Device) size_t ava_start = 0, ava_end = 0;
+	static if (isDevice!Device) long base_pos = 0;
+
+public:
+	this(T)(T d, size_t bufferSize) if (is(T == Device))
+	{
+		move(d, device);
+		buffer.length = E.sizeof * bufferSize;
+	}
+	
+  static if (isSink!Device)
+	~this()
+	{
+		while (reserves.length > 0)
+			flush();
+	}
+
+  static if (isSource!Device)
+	/**
+	Interfaces of InputPool.
+	*/
+	bool fetch()
+	body
+	{
+	  static if (isDevice!Device)
+		bool empty_reserves = (reserves.length == 0);
+	  else
+		enum empty_reserves = true;
+		
+		if (empty_reserves && available.length == 0)
+		{
+			static if (isDevice!Device)	base_pos += ava_end;
+			static if (isDevice!Device)	rsv_start = rsv_end = 0;
+										ava_start = ava_end = 0;
+		}
+		
+	  static if (isDevice!Device)
+		device.seek(base_pos + ava_end, SeekPos.Set);
+		
+		auto v = buffer[ava_end .. $];
+		auto result =  device.pull(v);
+		if (result)
+		{
+			static if (E.sizeof > 1) assert(v.length % E.sizeof == 0);
+			ava_end += v.length;
+		}
+		return result;
+	}
+	
+  static if (isSource!Device)
+	/// ditto
+	@property const(E)[] available() const
+	{
+		return cast(const(E)[]) buffer[ava_start .. ava_end];
+	}
+	
+  static if (isSource!Device)
+	/// ditto
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		ava_start += E.sizeof * n;
+	}
+
+  static if (isSink!Device)
+	/**
+	Interfaces of OutputPool.
+	*/
+	@property E[] usable()
+	{
+	  static if (isDevice!Device)
+		return cast(E[]) buffer[ava_start .. $];
+	  else
+		return cast(E[]) buffer[rsv_end .. $];
+	}
+  static if (isSink!Device)
+	private @property const(E)[] reserves()
+	{
+		return cast(const(E)[]) buffer[rsv_start .. rsv_end];
+	}
+	
+  static if (isSink!Device)
+	/// ditto
+	void commit(size_t n)
+	{
+	  static if (isDevice!Device)
+	  {
+		assert(ava_start + n * E.sizeof <= buffer.length);
+		ava_start += n * E.sizeof;
+		ava_end = max(ava_end, ava_start);
+		rsv_end = ava_start;
+	  }
+	  else
+	  {
+		assert(rsv_end + n * E.sizeof <= buffer.length);
+		rsv_end += n * E.sizeof;
+	  }
+	}
+	
+  static if (isSink!Device)
+	/// ditto
+	bool flush()
+	in { assert(reserves.length > 0); }
+	body
+	{
+	  static if (isDevice!Device)
+		device.seek(base_pos + rsv_start, SeekPos.Set);
+		
+		auto rsv = buffer[rsv_start .. rsv_end];
+		auto result = device.push(rsv);
+		if (result)
+		{
+			static if (E.sizeof > 1) assert(rsv.length % E.sizeof == 0);
+			rsv_start = rsv_end - rsv.length;
+			
+		  static if (isDevice!Device)
+			bool empty_available = (available.length == 0);
+		  else
+			enum empty_available = true;
+			
+			if (reserves.length == 0 && empty_available)
+			{
+				static if (isDevice!Device)	base_pos += ava_end;
+				static if (isDevice!Device)	ava_start = ava_end = 0;
+											rsv_start = rsv_end = 0;
+			}
+		}
+		return result;
+	}
+
+  static if (isSink!Device)
+	/**
+		OutputRange I/F
+	*/
+	void put(const(E)[] data)
+	{
+		.put(this, data);
+	}
+}+/
 
 /**
 */
@@ -600,21 +1199,25 @@ public:
 	/**
 		OutputRange I/F
 	*/
-	void put(ubyte[] data)
-	out {assert(usable.length > 0); }
-	body
+	bool push(const(ubyte)[] data)
 	{
+	//	フリー関数使用だと性能が1/10ぐらいに落ちる
+	//	.put(this, data);
 		while (data.length > 0)
 		{
 			if (usable.length == 0)
-				flush();
+				if (!flush()) goto Exit;
 			auto len = min(data.length, usable.length);
 			usable[0 .. len] = data[0 .. len];
 			data = data[len .. $];
 			commit(len);
 		}
 		if (usable.length == 0)
-			flush();
+			if (!flush()) goto Exit;
+		
+		return true;
+	  Exit:
+		return false;
 	}
 }
 unittest
@@ -777,21 +1380,25 @@ public:
 	/**
 		OutputRange I/F
 	*/
-	void put(ubyte[] data)
-	out {assert(usable.length > 0); }
-	body
+	bool push(const(ubyte)[] data)
 	{
+	//	フリー関数使用だと性能が1/10ぐらいに落ちる
+	//	.put(this, data);
 		while (data.length > 0)
 		{
 			if (usable.length == 0)
-				flush();
+				if (!flush()) goto Exit;
 			auto len = min(data.length, usable.length);
 			usable[0 .. len] = data[0 .. len];
 			data = data[len .. $];
 			commit(len);
 		}
 		if (usable.length == 0)
-			flush();
+			if (!flush()) goto Exit;
+		
+		return true;
+	  Exit:
+		return false;
 	}
 }
 unittest
@@ -904,6 +1511,29 @@ unittest
 	//assert(0);	// todo
 }+/
 
+/+/**
+	OutputRange I/F
+	Native implement for PoolSink
+*/
+void put(Sink, T)(Sink sink, const(T)[] data) if (isPoolSink!Sink)
+out {assert(sink.usable.length > 0); }
+body
+{
+	while (data.length > 0)
+	{
+		if (sink.usable.length == 0)
+			sink.flush();
+		auto len = min(data.length, sink.usable.length);
+		sink.usable[0 .. len] = data[0 .. len];
+		data = data[len .. $];
+		sink.commit(len);
+	}
+	if (sink.usable.length == 0)
+		sink.flush();
+}+/
+
+
+
 /**
 構築済みのInputをRangedで包むための補助関数
 */
@@ -972,7 +1602,7 @@ public:
 	/**
 	Interface of output range.
 	*/
-	void put(ubyte[] data)
+	void put(const(ubyte)[] data)
 	{
 		device.put(data);
 	}
@@ -1212,75 +1842,180 @@ else
 }
 
 
+/+/**
+*/
+struct TextSource(Source, Char) if (isPoolSource!Source && is(Char == char))
+{
+private:
+	Source source;
+
+private:
+	this(T)(T s) if (is(T == Source))
+	{
+		move(s, source);
+	}
+public:
+	/**
+	Deviceにconstructionを委譲する
+	Params:
+		args		= device constructor arguments
+	*/
+	this(Args...)(Args args)
+	{
+		__ctor(Source(args));
+	}
+
+	bool fetch()
+	{
+		return source.fetch();
+	}
+	@property const(Char)[] available() const
+	{
+		return cast(const(Char)[])source.available;
+	}
+	void consume(size_t n)
+	{
+		source.consume(n);
+	}
+}+/
+
+/+/**
+*/
+struct TextSink(Sink, Char) if (isPoolSink!Sink && is(Char == char))
+{
+private:
+	Sink sink;
+
+	this(S)(S s) if (is(S == Sink))
+	{
+		move(s, sink);
+	}
+public:
+	this(Args...)(Args args)
+	{
+		__ctor(Sink(args));
+	}
+
+	@property Char[] usable()
+	{
+		return cast(Char[])sink.usable;
+	}
+	void commit(size_t n)
+	{
+		foreach (i; 0 .. n)
+		{
+			if (sink.usable[i] == '\n')
+				sink.flush();
+		}
+		sink.commit(n);
+	}
+	bool flush()
+	{
+	}
+
+	/**
+		OutputRange I/F
+	*/
+	void put(const(Char)[] data)
+	{
+		sink.put(cast(const(ubyte)[])data);
+	}
+}+/
+
+/+/**
+*/
+struct TextDevice()
+{
+	bool fetch()
+	{
+	}
+	@property const(Char)[] available() const
+	{
+	}
+	void consume(size_t n)
+	{
+	}
+	
+	@property Char[] usable()
+	{
+	}
+	void commit(size_t n)
+	{
+	}
+	bool flush()
+	{
+	}
+}+/
+
+
+
 //pragma(msg, "is( char : ubyte) = ", is( char : ubyte));
 //pragma(msg, "is(wchar : ubyte) = ", is(wchar : ubyte));
 //pragma(msg, "is(dchar : ubyte) = ", is(dchar : ubyte));
 
 /**
 	Examples:
-		lined!string(buffered(File("foo.txt")))
-		lined!(const(char))("foo\nbar\nbaz", "\n")
+		lined!string(File("foo.txt"))
+	//	lined!(const(char))("foo\nbar\nbaz", "\n")
 */
-auto lined(String=string, R)(R r)
+auto lined(String=string, Source)(Source source, size_t bufferSize=2048)
+	if (isSource!Source)
 {
-	return Lined!(R, dstring, String)(move(r), cast(dstring)NativeNewLine);
+	alias Unqual!(typeof(String.init[0]))	Char;
+	alias Encoded!(Source, Char)			Enc;
+	alias Buffered!(Enc)					Buf;
+	alias Lined!(Buf, String, String)		LinedType;
+	return LinedType(Buf(Enc(move(source)), bufferSize), cast(String)NativeNewLine);
+/+
+	// フィルタの順番を逆にしても動作する
+	alias Unqual!(typeof(String.init[0]))   Char;
+	alias Buffered!(Source)				Buf;
+	alias Encoded!(Buf, Char)          Enc;
+	alias Lined!(Enc, String, String) LinedType;
+	return LinedType(Enc(Buf(move(source), bufferSize)), cast(String)NativeNewLine);
++/
 }
-/// ditto
-auto lined(String=string, R, Delim)(R r, in Delim delim)
+auto lined(String=string, Source, Delim)(Source source, in Delim delim, size_t bufferSize=2048)
+	if (isSource!Source && isInputRange!Delim)
 {
-	return Lined!(R, Delim, String)(move(r), move(delim));
+	alias Unqual!(typeof(String.init[0]))	Char;
+	alias Encoded!(Source, Char)			Enc;
+	alias Buffered!(Enc)					Buf;
+	alias Lined!(Buf, Delim, String)		LinedType;
+	return LinedType(Buf(Enc(move(source)), bufferSize), move(delim));
 }
+
 
 /**
-	string Rangeを取り、String型の行Rangeを返す
-	
-	As Source
-		Tがmutableなとき
-		String == T[] || String == const(T)[]
-			frontが返す配列の要素の値は次のpopFrontを呼ぶまで保障される
-			必要ならdupやidupを呼ぶこと
-		String == immutable(T)
-			frontが返す配列の要素の値は不変
-	
-	As Sink
-		lineへの書き込みが行える場合(String == T[])の挙動
-		o	書き換えられるが、値の寿命は次のpopFrontまで
-		x	書き換えによってオリジナルのSink(Fileなど)への書き込みが行われる
-	
-	別名ByLine
-	
-	
-	//----
-	より抽象的な表現
-	InputからDelimを区切りとして、Inputの要素配列を切り出す
+CharのPoolを取り、Delimを区切りとして切り出されたLineのInputRangeを構成する
+
+Naming:
+	LineReader?
+	LineStream?
 */
-struct Lined(Input, Delim, String : Char[], Char)
-/+	if (is(typeof(
-	{
-		void dummy(ref Appender!(Unqual!Char[]) app, ref Input r)
-		{
-			app.put(r.front);
-		}
-	}())))	// →Inputの要素をmutableな配列にコピーできるか
-+/
-	if (isSomeChar!Char)
+struct Lined(Pool, Delim, String : Char[], Char)
+	if (isPool!Pool && isSomeChar!Char)
 {
-	static assert(isInputPool!Input && is(PoolElementType!Input : const(ubyte)) && is(Char : const(char)));
+//	pragma(msg, "Lined : ElementType!(", Pool, ") = ", ElementType!Pool);
+	//static assert(is(ElementType!Pool == Unqual!Char));	// 評価バグ？
+	alias ElementType!Pool E;
+	static assert(is(E == Unqual!Char));
 
 private:
-	Input input;
+	alias Unqual!Char MutableChar;
+
+	Pool pool;
 	Delim delim;
-//	Appender!(Unqual!Char[]) buffer;	// trivial: reduce initializing const of appender
-	Appender!(Unqual!ubyte[]) buffer;	// trivial: reduce initializing const of appender
+	Appender!(MutableChar[]) buffer;	// trivial: reduce initializing const of appender
 	String line;
 	bool eof;
 
 public:
 	/**
 	*/
-	this(Input r, Delim d)
+	this(Pool p, Delim d)
 	{
-		move(r, input);
+		move(p, pool);
 		move(d, delim);
 		popFront();
 	}
@@ -1304,17 +2039,18 @@ public:
 	in { assert(!empty); }
 	body
 	{
-		const(ubyte)[] view;
+		const(MutableChar)[] view;
+		const(MutableChar)[] nextline;
 		
 		bool fetchExact()	// fillAvailable?
 		{
-			view = input.available;
+			view = pool.available;
 			while (view.length == 0)
 			{
 				//writefln("fetched");
-				if (!input.fetch())
+				if (!pool.fetch())
 					return false;
-				view = input.available;
+				view = pool.available;
 			}
 			return true;
 		}
@@ -1328,8 +2064,9 @@ public:
 		{
 			if (vlen == view.length)
 			{
-				line = cast(String)(buffer.put(view), buffer.data);
-				input.consume(vlen);
+				buffer.put(cast(MutableChar[])view);	//Generic input rangeとして扱わせないためのworkaround
+				nextline = buffer.data;
+				pool.consume(vlen);
 				if (!fetchExact())
 					break;
 				
@@ -1339,7 +2076,6 @@ public:
 			
 			auto e = view[vlen];
 			++vlen;
-			//writef("%02X ", e);
 			if (e == delim[dlen])
 			{
 				++dlen;
@@ -1347,13 +2083,13 @@ public:
 				{
 					if (buffer.data.length)
 					{
-						//writefln("%s@%s : %s %s %s %s", __FILE__, __LINE__, view, view.length, vlen, dlen);
-						line = cast(String)(buffer.put(view[0 .. vlen]), buffer.data[0 .. $ - dlen]);
+						buffer.put(cast(MutableChar[])view[0 .. vlen]);	//Generic input rangeとして扱わせないためのworkaround
+						nextline = (buffer.data[0 .. $ - dlen]);
 					}
 					else
-						line = cast(String)view[0 .. vlen - dlen];
+						nextline = view[0 .. vlen - dlen];
 					
-					input.consume(vlen);
+					pool.consume(vlen);
 					break;
 				}
 			}
@@ -1362,15 +2098,10 @@ public:
 		}
 		
 	  static if (is(Char == immutable))
-		line = line.idup;
+		line = nextline.idup;
+	  else
+		line = nextline;
 	}
-
-
-/+
-  static if (isOutputRange!(Input, String))
-	void put()
-	{
-	}+/
 }
 /+unittest
 {
@@ -1628,20 +2359,42 @@ unittest
 	assert(s == "01 02 03");
 }
 
-T* end(T)(T[] arr)
+/+T* end(T)(T[] arr)
 {
 	return arr.ptr + arr.length;
-}
+}+/
 
-void main()
+void main(string[] args)
 {
   version (MeasPerf)
   {
 	version (MeasPerf_LinedIn)		doMeasPerf_LinedIn();
 	version (MeasPerf_BufferdOut)	doMeasPerf_BufferdOut();
   }
+
+	test_replying_cat();
 }
 
+void test_replying_cat()
+{
+	void put(Sink, E)(Sink s, const(E)[] data)
+	{
+		auto v = cast(const(ubyte)[])data;
+		while (v.length > 0)
+			s.push(v);
+	}
+	
+	foreach (line; lined!(const(char)[])(din))
+	{
+		//writeln("> ", line);
+		put(dout, "> ");
+		put(dout, line);
+		put(dout, "\r\n");
+	//	std.format.formattedWrite(dout, "%s\r\n", line);
+	}
+}
+
+version (MeasPerf)
 void doMeasPerf_LinedIn()
 {
 	void test_file_buffered_lined(String)(string fname, string msg)
@@ -1653,7 +2406,7 @@ void doMeasPerf_LinedIn()
 		pc.start;
 		{	foreach (i; 0 .. 100)
 			{
-				auto f = lined!String(BufferedSource!(device.File)(fname, 2048));
+				auto f = lined!String(device.File(fname), 2048);
 				foreach (line; f)
 				{
 					line.dup, ++nlines;
@@ -1692,6 +2445,7 @@ void doMeasPerf_LinedIn()
 	test_file_buffered_lined!(string)		(fname,        "string dev in ");	// idup-ed line
 }
 
+version (MeasPerf)
 void doMeasPerf_BufferdOut()
 {
 	enum RemoveFile = true;
@@ -1712,16 +2466,16 @@ void doMeasPerf_BufferdOut()
 		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
 		static if (RemoveFile) std.file.remove(fname);
 	}
-	void test_dev_out(alias Buffered)(string fname, string msg)
+	void test_dev_out(alias Sink)(string fname, string msg)
 	{
 		auto bytedata = cast(ubyte[])data;
 		
 		auto pc = new PerformanceCounter;
 		pc.start;
-		{	auto f = Buffered!(device.File)(fname, "w", 2048);
+		{	auto f = Sink!(device.File)(fname, "w", 2048);
 			foreach (i; 0 .. nlines)
 			{
-				f.put(bytedata);
+				f.push(bytedata);
 			}
 		}pc.stop;
 		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
@@ -1732,4 +2486,5 @@ void doMeasPerf_BufferdOut()
 	test_std_out                 ("out_test1.txt",        "std out");
 	test_dev_out!(BufferedSink)  ("out_test2.txt", "  sink dev out");
 	test_dev_out!(BufferedDevice)("out_test3.txt", "device dev out");
+	test_dev_out!(Buffered)      ("out_test4.txt", "device dev out");
 }
