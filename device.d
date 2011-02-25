@@ -713,11 +713,8 @@ public:
 		ava_start += n;
 	}
 
-private{
-  static if (isSink!Device)
-	/**
-	Interfaces of OutputPool.
-	*/
+static if (isSink!Device) private
+{
 	@property E[] usable()
 	{
 	  static if (isDevice!Device)
@@ -725,14 +722,11 @@ private{
 	  else
 		return buffer[rsv_end .. $];
 	}
-  static if (isSink!Device)
 	private @property const(E)[] reserves()
 	{
 		return buffer[rsv_start .. rsv_end];
 	}
 	
-  static if (isSink!Device)
-	/// ditto
 	void commit(size_t n)
 	{
 	  static if (isDevice!Device)
@@ -786,7 +780,23 @@ private{
 	*/
 	bool push(const(E)[] data)
 	{
-		return device.push(data);
+	//	return device.push(data);
+		
+		while (data.length > 0)
+		{
+			if (usable.length == 0)
+				if (!flush()) goto Exit;
+			auto len = min(data.length, usable.length);
+			usable[0 .. len] = data[0 .. len];
+			data = data[len .. $];
+			commit(len);
+		}
+		if (usable.length == 0)
+			if (!flush()) goto Exit;
+		
+		return true;
+	  Exit:
+		return false;
 	}
 }
 
@@ -1112,21 +1122,25 @@ public:
 	/**
 		OutputRange I/F
 	*/
-	void put(const(ubyte)[] data)
+	bool push(const(ubyte)[] data)
 	{
 	//	フリー関数使用だと性能が1/10ぐらいに落ちる
 	//	.put(this, data);
 		while (data.length > 0)
 		{
 			if (usable.length == 0)
-				flush();
+				if (!flush()) goto Exit;
 			auto len = min(data.length, usable.length);
 			usable[0 .. len] = data[0 .. len];
 			data = data[len .. $];
 			commit(len);
 		}
 		if (usable.length == 0)
-			flush();
+			if (!flush()) goto Exit;
+		
+		return true;
+	  Exit:
+		return false;
 	}
 }
 unittest
@@ -1289,21 +1303,25 @@ public:
 	/**
 		OutputRange I/F
 	*/
-	void put(const(ubyte)[] data)
+	bool push(const(ubyte)[] data)
 	{
 	//	フリー関数使用だと性能が1/10ぐらいに落ちる
 	//	.put(this, data);
 		while (data.length > 0)
 		{
 			if (usable.length == 0)
-				flush();
+				if (!flush()) goto Exit;
 			auto len = min(data.length, usable.length);
 			usable[0 .. len] = data[0 .. len];
 			data = data[len .. $];
 			commit(len);
 		}
 		if (usable.length == 0)
-			flush();
+			if (!flush()) goto Exit;
+		
+		return true;
+	  Exit:
+		return false;
 	}
 }
 unittest
@@ -1416,7 +1434,7 @@ unittest
 	//assert(0);	// todo
 }+/
 
-/**
+/+/**
 	OutputRange I/F
 	Native implement for PoolSink
 */
@@ -1435,7 +1453,7 @@ body
 	}
 	if (sink.usable.length == 0)
 		sink.flush();
-}
+}+/
 
 
 
@@ -2394,16 +2412,16 @@ void doMeasPerf_BufferdOut()
 		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
 		static if (RemoveFile) std.file.remove(fname);
 	}
-	void test_dev_out(alias Buffered)(string fname, string msg)
+	void test_dev_out(alias Sink)(string fname, string msg)
 	{
 		auto bytedata = cast(ubyte[])data;
 		
 		auto pc = new PerformanceCounter;
 		pc.start;
-		{	auto f = Buffered!(device.File)(fname, "w", 2048);
+		{	auto f = Sink!(device.File)(fname, "w", 2048);
 			foreach (i; 0 .. nlines)
 			{
-				f.put(bytedata);
+				f.push(bytedata);
 			}
 		}pc.stop;
 		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
@@ -2414,4 +2432,5 @@ void doMeasPerf_BufferdOut()
 	test_std_out                 ("out_test1.txt",        "std out");
 	test_dev_out!(BufferedSink)  ("out_test2.txt", "  sink dev out");
 	test_dev_out!(BufferedDevice)("out_test3.txt", "device dev out");
+	test_dev_out!(Buffered)      ("out_test4.txt", "device dev out");
 }
