@@ -21,7 +21,7 @@ version(Windows)
 	enum : uint { ERROR_BROKEN_PIPE = 109 }
 }
 
-version = MeasPerf;
+//version = MeasPerf;
 version (MeasPerf)
 {
 	import std.perf, std.file;
@@ -130,6 +130,25 @@ template isSource(S, E)
 }
 
 /**
+In definition, initial state of pool has 0 length $(D available).$(BR)
+定義では、poolの初期状態は長さ0の$(D available)を持つ。$(BR)
+You can assume that pool is not $(D fetch)-ed yet.$(BR)
+これはpoolがまだ一度も$(D fetch)されたことがないと見なすことができる。$(BR)
+*/
+template isPool(S)
+{
+	enum isPool = is(typeof({
+		S s;
+		while (s.fetch())
+		{
+			auto buf = s.available;
+			size_t n;
+			s.consume(n);
+		}
+	}()));
+}
+
+/**
 Returns $(D true) if $(D S) is a $(I sink). A Source must define the
 primitive $(D push). 
 */
@@ -161,32 +180,11 @@ template isDevice(S)
 	enum isDevice = isSource!S && isSink!S;
 }
 
-/**
-
-In definition, initial state of pool has 0 length $(D available).$(BR)
-定義では、poolの初期状態は長さ0の$(D available)を持つ。$(BR)
-You can assume that pool is not $(D fetch)-ed yet.$(BR)
-これはpoolがまだ一度も$(D fetch)されたことがないと見なすことができる。$(BR)
-
-Basic element of sink is ubyte.
-
-*/
-template isInputPool(S)
-{
-	enum isInputPool = is(typeof({
-		S s;
-		while (s.fetch())
-		{
-			auto buf = s.available;
-			size_t n;
-			s.consume(n);
-		}
-	}()));
-}
+deprecated alias isPool isInputPool;
 
 /**
 */
-template isOutputPool(S)
+deprecated template isOutputPool(S)
 {
 	enum isOutputPool = is(typeof({
 		S s;
@@ -199,19 +197,17 @@ template isOutputPool(S)
 	}()));
 }
 
-alias isInputPool isPool;
-
+/+
 alias isInputPool isPoolSource;
 alias isOutputPool isPoolSink;
-
 template isPoolDevice(S)
 {
 	enum isPoolDevice = isPoolSource!S && isPoolSink!S;
-}
+}+/
 
 /**
 */
-template PoolElementType(S)
+/+template PoolElementType(S)
 {
 //	  static if (isDevice)
 //		static assert(is(S.init.available[0] == s.init.usable[0]));
@@ -220,8 +216,7 @@ template PoolElementType(S)
 		alias typeof(S.init.available[0]) PoolElementType;
 	static if (isOutputPool!S)
 		alias typeof(S.init.usable[0]) PoolElementType;
-}
-
+}+/
 template ElementType(S)
 	if (isSource!S || isPool!S || isSink!S)
 {
@@ -499,19 +494,76 @@ unittest
 	//assert(0);	// todo
 }
 
-/*shared */static this()
+/**
+*/
+template Sourced(Device)
 {
-//	din  = BufferedSource!File(GetStdHandle(STD_INPUT_HANDLE ), 2048);
-	dout = BufferedSink  !File(GetStdHandle(STD_OUTPUT_HANDLE), 2048);
-	derr = BufferedSink  !File(GetStdHandle(STD_ERROR_HANDLE ), 2048);
+  static if (isDevice!Device)
+  {
+	struct Sourced
+	{
+	private:
+		alias ElementType!Device E;
+		Device device;
+	
+	public:
+		this(A...)(A args)
+		{
+			move(Device(args), device);
+		}
+	
+		bool pull(ref E[] buf)
+		{
+			return device.pull(buf);
+		}
+	}
+  }
+  else static if (isSource!Device)
+	alias Device Sourced;
+  else
+	static assert(0, "Cannot limit "~Device.stringof~" as source");
 }
-/*__gshared
-{*/
-//	BufferedSource!File din;
-	BufferedSink  !File dout;
-	BufferedSink  !File derr;
-/*}*/
 
+/**
+*/
+template Sinked(Device)
+{
+  static if (isDevice!Device)
+  {
+	struct Sinked
+	{
+	private:
+		alias ElementType!Device E;
+		Device device;
+	
+	public:
+		/**
+		Delegate construction to $(D Device).
+		*/
+		this(A...)(A args)
+		{
+			move(Device(args), device);
+		}
+	
+		bool push(ref const(E)[] buf)
+		{
+			return device.push(buf);
+		}
+	}
+  }
+  else static if (isSink!Device)
+	alias Device Sinked;
+  else
+	static assert(0, "Cannot limit "~Device.stringof~" as sink");
+}
+
+
+/**
+*/
+Encoded!(Device, E) encoded(E, Device)(Device device)
+{
+	return typeof(return)(move(device));
+}
 
 /**
 */
@@ -618,6 +670,13 @@ public:
 	{
 		return device.seek(offset, whence);
 	}
+}
+
+/**
+*/
+Buffered!(Device) buffered(Device)(Device device, size_t bufferSize)
+{
+	return typeof(return)(move(device), bufferSize);
 }
 
 /**
@@ -801,6 +860,24 @@ static if (isSink!Device) private
 }
 
 
+/*shared */static this()
+{
+//	din  = BufferedSource!File(GetStdHandle(STD_INPUT_HANDLE ), 2048);
+//	dout = BufferedSink  !File(GetStdHandle(STD_OUTPUT_HANDLE), 2048);
+//	derr = BufferedSink  !File(GetStdHandle(STD_ERROR_HANDLE ), 2048);
+	din  = Sourced!File(GetStdHandle(STD_INPUT_HANDLE));
+	dout = Sinked !File(GetStdHandle(STD_OUTPUT_HANDLE));
+	derr = Sinked !File(GetStdHandle(STD_ERROR_HANDLE));
+}
+/*__gshared
+{*/
+//	BufferedSource!File din;
+//	BufferedSink  !File dout;
+//	BufferedSink  !File derr;
+	Sourced!File din;
+	Sinked !File dout;
+	Sinked !File derr;
+/*}*/
 
 
 
@@ -1765,7 +1842,7 @@ else
 }
 
 
-/**
+/+/**
 */
 struct TextSource(Source, Char) if (isPoolSource!Source && is(Char == char))
 {
@@ -1800,9 +1877,9 @@ public:
 	{
 		source.consume(n);
 	}
-}
+}+/
 
-/**
+/+/**
 */
 struct TextSink(Sink, Char) if (isPoolSink!Sink && is(Char == char))
 {
@@ -1843,9 +1920,9 @@ public:
 	{
 		sink.put(cast(const(ubyte)[])data);
 	}
-}
+}+/
 
-/**
+/+/**
 */
 struct TextDevice()
 {
@@ -1868,7 +1945,7 @@ struct TextDevice()
 	bool flush()
 	{
 	}
-}
+}+/
 
 
 
@@ -1885,14 +1962,14 @@ auto lined(String=string, Source)(Source source, size_t bufferSize=2048)
 	if (isSource!Source)
 {
 	alias Unqual!(typeof(String.init[0]))	Char;
-	alias Encoded!(File, Char)				Enc;
+	alias Encoded!(Source, Char)			Enc;
 	alias Buffered!(Enc)					Buf;
 	alias Lined!(Buf, String, String)		LinedType;
 	return LinedType(Buf(Enc(move(source)), bufferSize), cast(String)NativeNewLine);
 /+
 	// フィルタの順番を逆にしても動作する
 	alias Unqual!(typeof(String.init[0]))   Char;
-	alias Buffered!(File)				Buf;
+	alias Buffered!(Source)				Buf;
 	alias Encoded!(Buf, Char)          Enc;
 	alias Lined!(Enc, String, String) LinedType;
 	return LinedType(Enc(Buf(move(source), bufferSize)), cast(String)NativeNewLine);
@@ -1902,7 +1979,7 @@ auto lined(String=string, Source, Delim)(Source source, in Delim delim, size_t b
 	if (isSource!Source && isInputRange!Delim)
 {
 	alias Unqual!(typeof(String.init[0]))	Char;
-	alias Encoded!(File, Char)				Enc;
+	alias Encoded!(Source, Char)			Enc;
 	alias Buffered!(Enc)					Buf;
 	alias Lined!(Buf, Delim, String)		LinedType;
 	return LinedType(Buf(Enc(move(source)), bufferSize), move(delim));
@@ -2282,10 +2359,10 @@ unittest
 	assert(s == "01 02 03");
 }
 
-T* end(T)(T[] arr)
+/+T* end(T)(T[] arr)
 {
 	return arr.ptr + arr.length;
-}
+}+/
 
 void main(string[] args)
 {
@@ -2295,49 +2372,26 @@ void main(string[] args)
 	version (MeasPerf_BufferdOut)	doMeasPerf_BufferdOut();
   }
 
-/+
-	auto test_stdin  = File(GetStdHandle(STD_INPUT_HANDLE));
+	test_replying_cat();
+}
 
-	ubyte[] buffer;
-	buffer.length = 1024;
-	ubyte[] buf = buffer;
-
-	while (test_stdin.pull(buf))
+void test_replying_cat()
+{
+	void put(Sink, E)(Sink s, const(E)[] data)
 	{
-		write(buf.length ? "o" : "x");
-		writefln("buf.len=%s : %(%02X %)", buf.length, buf);
+		auto v = cast(const(ubyte)[])data;
+		while (v.length > 0)
+			s.push(v);
 	}
-	writefln("end");
-+/
-	//auto din  = BufferedSource!File(GetStdHandle(STD_INPUT_HANDLE), 1024);
-
-/+
-	auto text_din  = TextSource!(typeof(din), char)(din);
-//	auto text_dout = TextSink!(typeof(dout), char)(dout);
-
-	// output lines from stdandard input
-	foreach (line; lined!(const(char)[])(text_din))
+	
+	foreach (line; lined!(const(char)[])(din))
 	{
-		writeln(line);
-		
-	//	dout.put(cast(ubyte[])line);
-	//	dout.put(cast(ubyte[])"\r\n");
-	//	dout.flush();
-		
+		//writeln("> ", line);
+		put(dout, "> ");
+		put(dout, line);
+		put(dout, "\r\n");
 	//	std.format.formattedWrite(dout, "%s\r\n", line);
-//		std.format.formattedWrite(text_dout, "%s\n", line);
 	}
-+/
-
-/+
-	auto din = File(GetStdHandle(STD_INPUT_HANDLE));
-	auto char_din = EncodedPool!(File, char)(din, 1024);
-	auto lined_din = Lined!(typeof(char_din), string, const(char)[])(char_din, "\r\n");
-	foreach (line; lined_din)
-	{
-		writeln("> ", line);
-	}
-+/
 }
 
 version (MeasPerf)
