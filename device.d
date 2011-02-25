@@ -1,4 +1,14 @@
 ﻿/**
+
+Source,Pool,Sinkの3つを基本I/Fと置く
+(バッファリングされたSinkを明示的に扱う手段はなくす)
+
+それぞれがやり取りする要素の型は任意だが、Fileはubyteをやり取りする
+(D言語的にはvoid[]でもいいかも)
+
+Encodedはubyteを任意型にcastする機能を提供する
+Bufferedはバッファリングを行う
+
 */
 //module std.device;
 module device;
@@ -16,26 +26,8 @@ version (MeasPerf)
 {
 	import std.perf, std.file;
 	version = MeasPerf_LinedIn;
-//	version = MeasPerf_BufferdOut;
+	version = MeasPerf_BufferdOut;
 }
-
-/+unittest	// bug of std.array.Appender.put
-{
-	alias Appender!(char[]) App;
-	
-	{	App app;
-		app.put("\xE3");	//invariant(char)[] -> fail
-		assert(app.data == "\xE3");
-	}
-	{	App app;
-		app.put(cast(const(char)[])"\xE3");	//const(char) -> fail
-		assert(app.data == "\xE3");
-	}
-	{	App app;
-		app.put(cast(char[])"\xE3");	//char[] -> ok
-		assert(app.data == "\xE3");
-	}
-}+/
 
 /*
 	std.file.File.ByChunkの問題点：
@@ -119,9 +111,17 @@ $(DDOC_DECL_DD
 */
 template isSource(S)
 {
+//	__traits(allMembers, T)にはstatic ifで切られたものも含まれている…
+//	enum isSource = hasMember!(S, "pull");
+	enum isSource = __traits(hasMember, S, "pull");
+}
+
+///ditto
+template isSource(S, E)
+{
 	enum isSource = is(typeof({
 		S s;
-		ubyte[] buf;
+		E[] buf;
 		while(s.pull(buf))
 		{
 			// ...
@@ -135,9 +135,17 @@ primitive $(D push).
 */
 template isSink(S)
 {
+//	__traits(allMembers, T)にはstatic ifで切られたものも含まれている…
+//	enum isSink = hasMember!(S, "push");
+	enum isSink = __traits(hasMember, S, "push");
+}
+
+///ditto
+template isSink(S, E)
+{
 	enum isSink = is(typeof({
 		S s;
-		const(ubyte)[] buf;
+		const(E)[] buf;
 		do
 		{
 			// ...
@@ -214,6 +222,19 @@ template PoolElementType(S)
 		alias typeof(S.init.usable[0]) PoolElementType;
 }
 
+template ElementType(S)
+	if (isSource!S || isPool!S || isSink!S)
+{
+	static if (isSource!S)
+		alias Unqual!(typeof(ParameterTypeTuple!(typeof(S.init.pull))[0].init[0])) ElementType;
+	static if (isPool!S)
+		alias Unqual!(typeof(S.init.available[0])) ElementType;
+	static if (isSink!S)
+	{
+		alias Unqual!(typeof(ParameterTypeTuple!(typeof(S.init.push))[0].init[0])) ElementType;
+	}
+}
+
 // seek whence...
 enum SeekPos {
 	Set,
@@ -221,19 +242,17 @@ enum SeekPos {
 	End
 }
 
-/+/*
+/**
 	Check that S is seekable source or sink.
 	Seekable source/sink supports seek operation.
 */
 template isSeekable(S)
 {
 	enum isSeekable = is(typeof({
-		void dummy(ref S s)
-		{
-			s.seek(0, SeekPos.Set);
-		}
+		S s;
+		s.seek(0, SeekPos.Set);
 	}()));
-}+/
+}
 
 
 /+
@@ -493,7 +512,300 @@ unittest
 	BufferedSink  !File derr;
 /*}*/
 
+
 /**
+*/
+struct Encoded(Device, E)
+{
+private:
+	Device device;
+//	pragma(msg, "Encoded!(", Device, ", ", E, ") :");
+//	pragma(msg, "  isSource!Device = ", isSource!Device);
+//	pragma(msg, "  isPool  !Device = ", isPool  !Device);
+//	pragma(msg, "  isSink  !Device = ", isSink  !Device);
+
+public:
+	this(Device d)
+	{
+		move(d, device);
+	}
+	
+/+static if (isSink!Device && isPool!Device)
+	~this()
+	{
+		device.flush();
+	}+/
+
+  static if (isSource!Device)
+	bool pull(ref E[] buf)
+	{
+		auto v = cast(ubyte[])buf;
+		auto result = device.pull(v);
+		if (result)
+		{
+			static if (E.sizeof > 1) assert(v.length % E.sizeof == 0);
+			buf = cast(E[])v;
+		}
+		return result;
+	}
+
+  static if (isPool!Device)
+  {
+	/**
+	Interfaces of Pool.
+	*/
+	bool fetch()
+	{
+		return device.fetch();
+	}
+	
+	/// ditto
+	@property const(E)[] available() const
+	{
+		return cast(const(E)[])device.available;
+	}
+	
+	/// ditto
+	void consume(size_t n)
+	{
+		device.consume(E.sizeof * n);
+	}
+  }
+
+/+  static if (isSink!Device)
+	/**
+	Interfaces of OutputPool.
+	*/
+	@property E[] usable()
+	{
+		return cast(E[])device.usable;
+	}
+  static if (isSink!Device)
+	private @property const(E)[] reserves()
+	{
+		return cast(E[])device.reserves;
+	}
+	
+  static if (isSink!Device)
+	/// ditto
+	void commit(size_t n)
+	{
+		return device.commit(E.sizeof * n);
+	}
+	
+  static if (isSink!Device)
+	/// ditto
+	bool flush()
+	{
+		return device.flush();
+	}+/
+
+  static if (isSink!Device)
+	/**
+	Interface of Sink
+	*/
+	bool push(ref const(E)[] data)
+	{
+		auto v = cast(const(ubyte)[])data;
+		auto result = device.push(v);
+		static if (E.sizeof > 1) assert(v.length % E.sizeof == 0);
+		data = data[$ - v.length / E.sizeof .. $];
+		return result;
+	}
+
+  static if (isSeekable!Device)
+	ulong seek(long offset, SeekPos whence)
+	{
+		return device.seek(offset, whence);
+	}
+}
+
+/**
+*/
+struct Buffered(Device)
+//	if (isDevice!Device)					// Bufferedの側でSource/Sink/Deviceを明示して区別する
+//	if (isSource!Device || isSink!Device)	// オリジナルのdeviceに応じて最大公約数のI/Fを提供する
+	if (isSource!Device/* || isPool!Device*/ || isSink!Device)
+{
+private:
+	alias ElementType!Device E;
+//	pragma(msg, "Buffered!(", Device, ") : E = ", E);
+//	pragma(msg, "  isSource!Device = ", isSource!Device);
+//	pragma(msg, "  isPool  !Device = ", isPool  !Device);
+//	pragma(msg, "  isSink  !Device = ", isSink  !Device);
+
+	Device device;
+//	ubyte[] buffer;
+	E[] buffer;
+	static if (isSink  !Device) size_t rsv_start = 0, rsv_end = 0;
+	static if (isSource!Device) size_t ava_start = 0, ava_end = 0;
+	static if (isDevice!Device) long base_pos = 0;
+
+private:
+	this(T)(T d, size_t bufferSize) if (is(T == Device))
+	{
+		move(d, device);
+		buffer.length = bufferSize;
+	}
+public:
+	/**
+	Deviceにconstructionを委譲する
+	Params:
+		args		= device constructor arguments
+		bufferSize	= バッファリングされる要素数
+	*/
+	this(Args...)(Args args, size_t bufferSize)
+	{
+		__ctor(Device(args), bufferSize);
+	}
+	
+  static if (isSink!Device)
+	~this()
+	{
+		while (reserves.length > 0)
+			flush();
+	}
+
+  static if (isSource!Device)
+	/**
+	Interfaces of Pool.
+	*/
+	bool fetch()
+	body
+	{
+	  static if (isDevice!Device)
+		bool empty_reserves = (reserves.length == 0);
+	  else
+		enum empty_reserves = true;
+		
+		if (empty_reserves && available.length == 0)
+		{
+			static if (isDevice!Device)	base_pos += ava_end;
+			static if (isDevice!Device)	rsv_start = rsv_end = 0;
+										ava_start = ava_end = 0;
+		}
+		
+	  static if (isDevice!Device)
+		device.seek(base_pos + ava_end, SeekPos.Set);
+		
+		auto v = buffer[ava_end .. $];
+		auto result =  device.pull(v);
+		if (result)
+		{
+			ava_end += v.length;
+		}
+		return result;
+	}
+	
+  static if (isSource!Device)
+	/// ditto
+	@property const(E)[] available() const
+	{
+		return buffer[ava_start .. ava_end];
+	}
+	
+  static if (isSource!Device)
+	/// ditto
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		ava_start += n;
+	}
+
+private{
+  static if (isSink!Device)
+	/**
+	Interfaces of OutputPool.
+	*/
+	@property E[] usable()
+	{
+	  static if (isDevice!Device)
+		return buffer[ava_start .. $];
+	  else
+		return buffer[rsv_end .. $];
+	}
+  static if (isSink!Device)
+	private @property const(E)[] reserves()
+	{
+		return buffer[rsv_start .. rsv_end];
+	}
+	
+  static if (isSink!Device)
+	/// ditto
+	void commit(size_t n)
+	{
+	  static if (isDevice!Device)
+	  {
+		assert(ava_start + n <= buffer.length);
+		ava_start += n;
+		ava_end = max(ava_end, ava_start);
+		rsv_end = ava_start;
+	  }
+	  else
+	  {
+		assert(rsv_end + n <= buffer.length);
+		rsv_end += n;
+	  }
+	}
+}
+	
+  static if (isSink!Device)
+	/// ditto
+	bool flush()
+	in { assert(reserves.length > 0); }
+	body
+	{
+	  static if (isDevice!Device)
+		device.seek(base_pos + rsv_start, SeekPos.Set);
+		
+		auto rsv = buffer[rsv_start .. rsv_end];
+		auto result = device.push(rsv);
+		if (result)
+		{
+			rsv_start = rsv_end - rsv.length;
+			
+		  static if (isDevice!Device)
+			bool empty_available = (available.length == 0);
+		  else
+			enum empty_available = true;
+			
+			if (reserves.length == 0 && empty_available)
+			{
+				static if (isDevice!Device)	base_pos += ava_end;
+				static if (isDevice!Device)	ava_start = ava_end = 0;
+											rsv_start = rsv_end = 0;
+			}
+		}
+		return result;
+	}
+
+  static if (isSink!Device)
+	/**
+		OutputRange I/F
+	*/
+	bool push(const(E)[] data)
+	{
+		return device.push(data);
+	}
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/+/**
 構築済みのInputをBufferedで包むための補助関数
 */
 Buffered!Device buffered(Device)(Device dev, size_t bufferSize = 2048)
@@ -516,9 +828,9 @@ template Buffered(T)
 		static if (isSink!T)
 			alias BufferedSink!T Buffered;
 	}
-}
+}+/
 
-/**
+/+/**
 Sourceのバイト列をEのバイト表現と見なすPoolを提供する
 */
 struct EncodedPool(Source, E) if (isSource!Source)
@@ -574,7 +886,159 @@ unittest
 {
 	static assert(isPool!(EncodedPool!(File, char)));
 	//assert(0);	// todo
-}
+}+/
+
+/+/**
+ubyteのDeviceに対してEのバイト表現で入出力するDeviceを提供する
+*/
+struct EncodedPool2(Device, E)
+//	if (isDevice!Device)					// Bufferedの側でSource/Sink/Deviceを明示して区別する
+	if (isSource!Device || isSink!Device)	// オリジナルのdeviceに応じて最大公約数のI/Fを提供する
+{
+private:
+	Device device;
+	ubyte[] buffer;
+	static if (isSink  !Device) size_t rsv_start = 0, rsv_end = 0;
+	static if (isSource!Device) size_t ava_start = 0, ava_end = 0;
+	static if (isDevice!Device) long base_pos = 0;
+
+public:
+	this(T)(T d, size_t bufferSize) if (is(T == Device))
+	{
+		move(d, device);
+		buffer.length = E.sizeof * bufferSize;
+	}
+	
+  static if (isSink!Device)
+	~this()
+	{
+		while (reserves.length > 0)
+			flush();
+	}
+
+  static if (isSource!Device)
+	/**
+	Interfaces of InputPool.
+	*/
+	bool fetch()
+	body
+	{
+	  static if (isDevice!Device)
+		bool empty_reserves = (reserves.length == 0);
+	  else
+		enum empty_reserves = true;
+		
+		if (empty_reserves && available.length == 0)
+		{
+			static if (isDevice!Device)	base_pos += ava_end;
+			static if (isDevice!Device)	rsv_start = rsv_end = 0;
+										ava_start = ava_end = 0;
+		}
+		
+	  static if (isDevice!Device)
+		device.seek(base_pos + ava_end, SeekPos.Set);
+		
+		auto v = buffer[ava_end .. $];
+		auto result =  device.pull(v);
+		if (result)
+		{
+			static if (E.sizeof > 1) assert(v.length % E.sizeof == 0);
+			ava_end += v.length;
+		}
+		return result;
+	}
+	
+  static if (isSource!Device)
+	/// ditto
+	@property const(E)[] available() const
+	{
+		return cast(const(E)[]) buffer[ava_start .. ava_end];
+	}
+	
+  static if (isSource!Device)
+	/// ditto
+	void consume(size_t n)
+	in { assert(n <= available.length); }
+	body
+	{
+		ava_start += E.sizeof * n;
+	}
+
+  static if (isSink!Device)
+	/**
+	Interfaces of OutputPool.
+	*/
+	@property E[] usable()
+	{
+	  static if (isDevice!Device)
+		return cast(E[]) buffer[ava_start .. $];
+	  else
+		return cast(E[]) buffer[rsv_end .. $];
+	}
+  static if (isSink!Device)
+	private @property const(E)[] reserves()
+	{
+		return cast(const(E)[]) buffer[rsv_start .. rsv_end];
+	}
+	
+  static if (isSink!Device)
+	/// ditto
+	void commit(size_t n)
+	{
+	  static if (isDevice!Device)
+	  {
+		assert(ava_start + n * E.sizeof <= buffer.length);
+		ava_start += n * E.sizeof;
+		ava_end = max(ava_end, ava_start);
+		rsv_end = ava_start;
+	  }
+	  else
+	  {
+		assert(rsv_end + n * E.sizeof <= buffer.length);
+		rsv_end += n * E.sizeof;
+	  }
+	}
+	
+  static if (isSink!Device)
+	/// ditto
+	bool flush()
+	in { assert(reserves.length > 0); }
+	body
+	{
+	  static if (isDevice!Device)
+		device.seek(base_pos + rsv_start, SeekPos.Set);
+		
+		auto rsv = buffer[rsv_start .. rsv_end];
+		auto result = device.push(rsv);
+		if (result)
+		{
+			static if (E.sizeof > 1) assert(rsv.length % E.sizeof == 0);
+			rsv_start = rsv_end - rsv.length;
+			
+		  static if (isDevice!Device)
+			bool empty_available = (available.length == 0);
+		  else
+			enum empty_available = true;
+			
+			if (reserves.length == 0 && empty_available)
+			{
+				static if (isDevice!Device)	base_pos += ava_end;
+				static if (isDevice!Device)	ava_start = ava_end = 0;
+											rsv_start = rsv_end = 0;
+			}
+		}
+		return result;
+	}
+
+  static if (isSink!Device)
+	/**
+		OutputRange I/F
+	*/
+	void put(const(E)[] data)
+	{
+		.put(this, data);
+	}
+}+/
 
 /**
 */
@@ -948,6 +1412,8 @@ body
 	if (sink.usable.length == 0)
 		sink.flush();
 }
+
+
 
 /**
 構築済みのInputをRangedで包むための補助関数
@@ -1376,28 +1842,45 @@ struct TextDevice()
 auto lined(String=string, Source)(Source source, size_t bufferSize=2048)
 	if (isSource!Source)
 {
+	alias Unqual!(typeof(String.init[0]))	Char;
+	alias Encoded!(File, Char)				Enc;
+	alias Buffered!(Enc)					Buf;
+	alias Lined!(Buf, String, String)		LinedType;
+	return LinedType(Buf(Enc(move(source)), bufferSize), cast(String)NativeNewLine);
+/+
+	// フィルタの順番を逆にしても動作する
 	alias Unqual!(typeof(String.init[0]))   Char;
-	alias EncodedPool!(File, Char)          Pool;
-	alias Lined!(Pool, String, String) LinedType;
-	return LinedType(Pool(move(source), bufferSize), cast(String)NativeNewLine);
+	alias Buffered!(File)				Buf;
+	alias Encoded!(Buf, Char)          Enc;
+	alias Lined!(Enc, String, String) LinedType;
+	return LinedType(Enc(Buf(move(source), bufferSize)), cast(String)NativeNewLine);
++/
 }
 auto lined(String=string, Source, Delim)(Source source, in Delim delim, size_t bufferSize=2048)
 	if (isSource!Source && isInputRange!Delim)
 {
-	alias Unqual!(typeof(String.init[0]))   Char;
-	alias EncodedPool!(File, Char)          Pool;
-	alias Lined!(Pool, Delim, String)  LinedType;
-	return LinedType(Pool(move(source), bufferSize), move(delim));
+	alias Unqual!(typeof(String.init[0]))	Char;
+	alias Encoded!(File, Char)				Enc;
+	alias Buffered!(Enc)					Buf;
+	alias Lined!(Buf, Delim, String)		LinedType;
+	return LinedType(Buf(Enc(move(source)), bufferSize), move(delim));
 }
 
 
 /**
 CharのPoolを取り、Delimを区切りとして切り出されたLineのInputRangeを構成する
+
+Naming:
+	LineReader?
+	LineStream?
 */
 struct Lined(Pool, Delim, String : Char[], Char)
 	if (isPool!Pool && isSomeChar!Char)
 {
-	static assert(is(Unqual!(PoolElementType!Pool) == Unqual!(Char)));
+//	pragma(msg, "Lined : ElementType!(", Pool, ") = ", ElementType!Pool);
+	//static assert(is(ElementType!Pool == Unqual!Char));	// 評価バグ？
+	alias ElementType!Pool E;
+	static assert(is(E == Unqual!Char));
 
 private:
 	alias Unqual!Char MutableChar;
