@@ -1114,7 +1114,19 @@ public:
 	*/
 	void put(const(ubyte)[] data)
 	{
-		.put(this, data);
+	//	フリー関数使用だと性能が1/10ぐらいに落ちる
+	//	.put(this, data);
+		while (data.length > 0)
+		{
+			if (usable.length == 0)
+				flush();
+			auto len = min(data.length, usable.length);
+			usable[0 .. len] = data[0 .. len];
+			data = data[len .. $];
+			commit(len);
+		}
+		if (usable.length == 0)
+			flush();
 	}
 }
 unittest
@@ -1279,7 +1291,19 @@ public:
 	*/
 	void put(const(ubyte)[] data)
 	{
-		.put(this, data);
+	//	フリー関数使用だと性能が1/10ぐらいに落ちる
+	//	.put(this, data);
+		while (data.length > 0)
+		{
+			if (usable.length == 0)
+				flush();
+			auto len = min(data.length, usable.length);
+			usable[0 .. len] = data[0 .. len];
+			data = data[len .. $];
+			commit(len);
+		}
+		if (usable.length == 0)
+			flush();
 	}
 }
 unittest
