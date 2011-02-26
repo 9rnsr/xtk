@@ -1164,7 +1164,7 @@ body
 
 
 
-/+/**
+/**
 構築済みのInputをRangedで包むための補助関数
 */
 Ranged!Device ranged(Device)(Device device)
@@ -1178,32 +1178,27 @@ Design:
 	Rangeはコンストラクト直後にemptyが取れる、つまりPoolでいうfetch済みである必要があるが、
 	Poolは未fetchであることが必要なので互いの要件が矛盾する。よってPoolはInputRangeを
 	同時に提供できないため、これをWrapするRangedが必要となる。
+Design:
+	Sourceは先読みが出来ない＝emptyを計算できないので不可能
+	OutputRangeはempty無関係なのでSinkのpushでいける
 */
-struct Ranged(Device) if (isInputPool!Device || isOutputPool!Device)
+struct Ranged(Device) if (isPool!Device || isSink!Device)
 {
 private:
+	alias ElementType!Device E;
 	Device device;
-	bool eof = false;
+	bool eof;
 
-private:
-	this(T)(T i) if (is(T == Device))
+public:
+	this(Device d)
 	{
-		move(i, device);
-	  static if (isInputPool!Device)
+		move(d, device);
+	  static if (isPool!Device)
 		eof = !device.fetch();
 	}
-public:
-	/**
-	Deviceにconstructionを委譲する
-	Params:
-		args		= device constructor arguments
-	*/
-	this(A...)(A args)
-	{
-		__ctor(Device(args));
-	}
 
-  static if (isInputPool!Device)
+  static if (isPool!Device)
+  {
 	/**
 	Interfaces of input range.
 	*/
@@ -1212,14 +1207,12 @@ public:
 		return eof;
 	}
 	
-  static if (isInputPool!Device)
 	/// ditto
-	@property ubyte front()
+	@property E front()
 	{
 		return device.available[0];
 	}
 	
-  static if (isInputPool!Device)
 	/// ditto
 	void popFront()
 	{
@@ -1227,16 +1220,41 @@ public:
 		if (device.available.length == 0)
 			eof = !device.fetch();
 	}
+  }
 
-  static if (isOutputPool!Device)
+  static if (isSink!Device)
 	/**
 	Interface of output range.
 	*/
-	void put(const(ubyte)[] data)
+	void put(const(E)[] data)
 	{
-		device.put(data);
+		if (data.length == 0)
+			return;
+		
+		do
+		{
+			if (!device.push(data))
+				throw new Exception("");
+		}while (data.length > 0)
 	}
-}+/
+}
+unittest
+{
+	auto fname = "dummy.txt";
+	{	auto r = ranged(Sinked!File(fname, "w"));
+		ubyte[] data = [1,2,3];
+		r.put(data);
+	}
+	{	auto r = ranged(buffered(Sourced!File(fname, "r"), 1024));
+		auto i = 1;
+		foreach (e; r)
+		{
+			static assert(is(typeof(e) == ubyte));
+			assert(e == i++);
+		}
+	}
+	std.file.remove(fname);
+}
 
 /+/**
 Decoder構築用の補助関数
