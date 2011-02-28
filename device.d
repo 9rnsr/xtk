@@ -120,16 +120,16 @@ Retruns element type of device.
 Naming:
 	More good naming.
 */
-template ElementType(S)
+template UnitType(S)
 	if (isSource!S || isPool!S || isSink!S)
 {
 	static if (isSource!S)
-		alias Unqual!(typeof(ParameterTypeTuple!(typeof(S.init.pull))[0].init[0])) ElementType;
+		alias Unqual!(typeof(ParameterTypeTuple!(typeof(S.init.pull))[0].init[0])) UnitType;
 	static if (isPool!S)
-		alias Unqual!(typeof(S.init.available[0])) ElementType;
+		alias Unqual!(typeof(S.init.available[0])) UnitType;
 	static if (isSink!S)
 	{
-		alias Unqual!(typeof(ParameterTypeTuple!(typeof(S.init.push))[0].init[0])) ElementType;
+		alias Unqual!(typeof(ParameterTypeTuple!(typeof(S.init.push))[0].init[0])) UnitType;
 	}
 }
 
@@ -342,7 +342,7 @@ template Sourced(Device)
 	struct Sourced
 	{
 	private:
-		alias ElementType!Device E;
+		alias UnitType!Device E;
 		Device device;
 	
 	public:
@@ -400,7 +400,7 @@ template Sinked(Device)
 	struct Sinked
 	{
 	private:
-		alias ElementType!Device E;
+		alias UnitType!Device E;
 		Device device;
 	
 	public:
@@ -551,7 +551,7 @@ struct Buffered(Device)
 	if (isSource!Device || isSink!Device)
 {
 private:
-	alias ElementType!Device E;
+	alias UnitType!Device E;
 	Device device;
 	E[] buffer;
 	static if (isSink  !Device) size_t rsv_start = 0, rsv_end = 0;
@@ -763,7 +763,7 @@ template Ranged(alias Device) if (isTemplate!Device)
 struct Ranged(Device) if (isPool!Device || isSink!Device)
 {
 private:
-	alias ElementType!Device E;
+	alias UnitType!Device E;
 	Device device;
 	bool eof;
 
@@ -896,8 +896,8 @@ auto lined(String=string, Source, Delim)(Source source, in Delim delim, size_t b
 struct Lined(Pool, Delim, String : Char[], Char)
 	if (isPool!Pool && isSomeChar!Char)
 {
-	//static assert(is(ElementType!Pool == Unqual!Char));	// compile-time evaluation bug？
-	alias ElementType!Pool E;
+	//static assert(is(UnitType!Pool == Unqual!Char));	// compile-time evaluation bug？
+	alias UnitType!Pool E;
 	static assert(is(E == Unqual!Char));
 
 private:

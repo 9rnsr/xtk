@@ -1,5 +1,9 @@
 ﻿import std.stdio;
 
+import std.base64;
+import device_base64;
+
+
 enum bool Print = false;
 
 import std.perf;
@@ -18,18 +22,20 @@ void main(string[] args)
 		}
 		
 		// -------------
-		perf_std_base64(fname, "std base64  ", std_print);
+		perf_std_base64(fname, "std base64   ", std_print);
 		
-		//perf_dev_base64_chunk!(device_base64.base64_0)(fname, "dev base64 0", dev_print);
+//		perf_dev_base64_chunk!(device_base64.base64_0)(fname, "dev base64 0 ", dev_print);
 		
-	//	perf_dev_base64!(device_base64.base64_1)(fname, "dev base64 1", dev_print);
-	//	perf_dev_base64!(device_base64.base64_2)(fname, "dev base64 2", dev_print);
-	//	perf_dev_base64!(device_base64.base64_3)(fname, "dev base64 3", dev_print);
-	//	perf_dev_base64!(device_base64.base64_4)(fname, "dev base64 4", dev_print);
+//		perf_dev_base64!(device_base64.base64_1)(fname, "dev base64 1 ", dev_print);
+//		perf_dev_base64!(device_base64.base64_2)(fname, "dev base64 2 ", dev_print);
+//		perf_dev_base64!(device_base64.base64_3)(fname, "dev base64 3 ", dev_print);
+		/////perf_dev_base64!(device_base64.base64_4)(fname, "dev base64 4 ", dev_print);
 		
+		perf_dev_base64_pool !(device_base64.base64_4p)(fname, "dev base64 4p", dev_print);
 		perf_dev_base64_chunk!(device_base64.base64_4x)(fname, "dev base64 4x", dev_print);
+//		perf_dev_base64!(device_base64.base64_4c)(fname, "dev base64 4c", dev_print);
 		
-	//	perf_dev_base64!(device_base64.base64_4c)(fname, "dev base64 4c", dev_print);
+		perf_dev_base64_chunk!(device_base64.base64_5)(fname, "dev base64 5 ", dev_print);
 		// -------------
 /+
 Buffered!Fileのサイズを3の倍数にし、境界を合わせた上で
@@ -71,7 +77,6 @@ Buffered!Fileのサイズを3の倍数にし、境界を合わせた上で
 
 }
 
-import std.base64;
 void perf_std_base64(string fname, string msg, bool p=false)
 {
 	static if (Print) if (p) writefln("----");
@@ -80,7 +85,7 @@ void perf_std_base64(string fname, string msg, bool p=false)
 	
 	size_t char_count = 0;
 	
-	foreach (chunk; std.base64.Base64.encoder(std.stdio.File(fname).byChunk(2048)))
+	foreach (chunk; std.base64.Base64.encoder(std.stdio.File(fname).byChunk(2040)))
 	{
 		foreach (c; chunk)
 		{
@@ -97,7 +102,46 @@ void perf_std_base64(string fname, string msg, bool p=false)
 	writefln("%24s : %10.0f characters/sec", msg, char_count / (1.e-6 * pc.microseconds));
 }
 
-import device_base64;
+
+void perf_dev_base64_pool(alias Base64)(string fname, string msg, bool p=false)
+{
+	static if (Print) if (p) writefln("----");
+	auto pc = new PerformanceCounter;
+	pc.start;
+	
+	size_t char_count = 0;
+	
+	void put(Sink, E)(Sink s, const(E)[] data)
+	{
+		auto v = cast(const(ubyte)[])data;
+		while (v.length > 0)
+			s.push(v);
+	}
+	auto enc = Base64.encoder(Buffered!(device.File)(fname, 2040));
+	while (enc.fetch())
+	{
+		auto chunk = enc.available;
+	  version (none)
+	  {
+		char_count += chunk.length;	//反則
+	  }
+	  else
+	  {
+		foreach (c; chunk)
+		{
+			++char_count;
+		}
+	  }
+	//	put(dout, chunk);
+		enc.consume(chunk.length);
+	}
+	
+	pc.stop;
+	static if (Print) if (p) writefln("\n----");
+	
+	writefln("characters = %s", char_count);
+	writefln("%24s : %10.0f characters/sec", msg, char_count / (1.e-6 * pc.microseconds));
+}
 void perf_dev_base64(alias Base64)(string fname, string msg, bool p=false)
 {
 	static if (Print) if (p) writefln("----");
@@ -106,8 +150,8 @@ void perf_dev_base64(alias Base64)(string fname, string msg, bool p=false)
 	
 	size_t char_count = 0;
 	
-	foreach (c; Base64.encoder(Buffered!(device.File)(fname, 2048)))
-//	foreach (c; Base64.encoder(Buffered!(device.File)(fname, 2040), 2720))	//境界を合わせる
+//	foreach (c; Base64.encoder(Buffered!(device.File)(fname, 2048)))
+	foreach (c; Base64.encoder(Buffered!(device.File)(fname, 2040), 2720))	//境界を合わせる
 	{
 		++char_count;
 		static if (Print) if (p) write(c);
