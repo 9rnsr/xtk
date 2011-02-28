@@ -30,19 +30,16 @@ version(Windows)
 	enum : uint { ERROR_BROKEN_PIPE = 109 }
 }
 
-version = MeasPerf;
-version (MeasPerf)
-{
-	import std.perf, std.file;
-	version = MeasPerf_LinedIn;
-	version = MeasPerf_BufferedOut;
-}
+import device_utils;
 
 debug = Workarounds;
 debug (Workarounds)
 {
-	debug = Issue5661;	// std.algorithm.move
-	debug = Issue5663;	// std.array.Appender.put
+	debug = Issue5661;	// replace of std.algorithm.move
+	debug = Issue5663;	// replace of std.array.Appender.put
+	
+	debug (Issue5661)	alias issue5661fix_move move;
+	debug (Issue5663)	alias issue5663fix_Appender Appender;
 }
 
 /**
@@ -966,9 +963,6 @@ public:
 		{
 			if (vlen == view.length)
 			{
-			  debug (Issue5663)
-				buffer.put(cast(MutableChar[])view);
-			  else
 				buffer.put(view);
 				nextline = buffer.data;
 				pool.consume(vlen);
@@ -988,9 +982,6 @@ public:
 				{
 					if (buffer.data.length)
 					{
-					  debug (Issue5663)
-						buffer.put(cast(MutableChar[])view[0 .. vlen]);
-					  else
 						buffer.put(view[0 .. vlen]);
 						nextline = (buffer.data[0 .. $ - dlen]);
 					}
@@ -1043,49 +1034,6 @@ public:
 	testParseLines!(dstring, dstring)();
 }+/
 
-
-debug (Issue5661)
-{
-import std.exception : pointsTo;
-void move(T, int line=__LINE__)(ref T source, ref T target)
-{
-    if (&source == &target) return;
-    assert(!pointsTo(source, source));
-    static if (is(T == struct))
-    {
-        // Most complicated case. Destroy whatever target had in it
-        // and bitblast source over it
-//      static if (is(typeof(target.__dtor()))) target.__dtor();
-		static if (hasElaborateDestructor!(typeof(source))) typeid(T).destroy(&target);
-        memcpy(&target, &source, T.sizeof);
-        // If the source defines a destructor or a postblit hook, we must obliterate the
-        // object in order to avoid double freeing and undue aliasing
-//      static if (is(typeof(source.__dtor())) || is(typeof(source.__postblit())))
-		static if (hasElaborateDestructor!(typeof(source)))
-        {
-            static T empty;
-            memcpy(&source, &empty, T.sizeof);
-        }
-    }
-    else
-    {
-        // Primitive data (including pointers and arrays) or class -
-        // assignment works great
-        target = source;
-        // static if (is(typeof(source = null)))
-        // {
-        //     // Nullify the source to help the garbage collector
-        //     source = null;
-        // }
-    }
-}
-T move(T)(ref T src)
-{
-    T result;
-    move(src, result);
-    return result;
-}
-}	// Issue5661
 
 /*
 	How to get PageSize:
@@ -1160,132 +1108,3 @@ T move(T)(ref T src)
 		}
 	}
 */
-
-
-/**
-Return $(D true) if $(D_PARAM T) is template.
-*/
-template isTemplate(alias T)
-{
-	enum isTemplate = is(typeof(T)) && !__traits(compiles, { auto v = T; });
-}
-
-
-/**
-This may improvement of std.string.format.
-*/
-import std.format;
-string format(Char, A...)(in Char[] fmt, A args)
-{
-    auto writer = appender!string();
-    formattedWrite(writer, fmt, args);
-	return writer.data;
-}
-unittest
-{
-	auto s = format("%(%02X %)", [1,2,3]);
-	assert(s == "01 02 03");
-}
-
-void main(string[] args)
-{
-  version (MeasPerf)
-  {
-	version (MeasPerf_LinedIn)		doMeasPerf_LinedIn();
-	version (MeasPerf_BufferedOut)	doMeasPerf_BufferedOut();
-  }
-}
-
-version (MeasPerf)
-void doMeasPerf_LinedIn()
-{
-	void test_file_buffered_lined(String)(string fname, string msg)
-	{
-		enum CalcPerf = true;
-		size_t nlines = 0;
-		
-		auto pc = new PerformanceCounter;
-		pc.start;
-		{	foreach (i; 0 .. 100)
-			{
-				auto f = lined!String(device.File(fname), 2048);
-				foreach (line; f)
-				{
-					line.dup, ++nlines;
-					static if (!CalcPerf) writefln("%s", line);
-				}
-				static if (!CalcPerf) assert(0);
-			}
-		}pc.stop;
-		
-		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
-	}
-	void test_std_lined(string fname, string msg)
-	{
-		size_t nlines = 0;
-		
-		auto pc = new PerformanceCounter;
-		pc.start;
-		{	foreach (i; 0 .. 100)
-			{
-				auto f = std.stdio.File(fname);
-				foreach (line; f.byLine)
-				{
-					line.dup, ++nlines;
-				}
-				f.close();
-			}
-		}pc.stop;
-		
-		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
-	}
-
-	writefln("Lined!(BufferedSource!File) performance measurement:");
-	auto fname = __FILE__;
-	test_std_lined							(fname,        "char[] std in ");
-	test_file_buffered_lined!(const(char)[])(fname, "const(char)[] dev in ");	// sliceed line
-	test_file_buffered_lined!(string)		(fname,        "string dev in ");	// idup-ed line
-}
-
-version (MeasPerf)
-void doMeasPerf_BufferedOut()
-{
-	enum RemoveFile = true;
-	size_t nlines = 100000;
-//	auto data = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\r\n";
-	auto data = "1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\r\n";
-	
-	void test_std_out(string fname, string msg)
-	{
-		auto pc = new PerformanceCounter;
-		pc.start;
-		{	auto f = std.stdio.File(fname, "wb");
-			foreach (i; 0 .. nlines)
-			{
-				f.write(data);
-			}
-		}pc.stop;
-		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
-		static if (RemoveFile) std.file.remove(fname);
-	}
-	void test_dev_out(alias Sink)(string fname, string msg)
-	{
-		auto bytedata = cast(ubyte[])data;
-		
-		auto pc = new PerformanceCounter;
-		pc.start;
-		{	auto f = Sink!(device.File)(fname, "w", 2048);
-			foreach (i; 0 .. nlines)
-			{
-				f.push(bytedata);
-			}
-		}pc.stop;
-		writefln("%24s : %10.0f line/sec", msg, nlines / (1.e-6 * pc.microseconds));
-		static if (RemoveFile) std.file.remove(fname);
-	}
-
-	writefln("BufferedSink/Device!File performance measurement:");
-	test_std_out                  ("out_test1.txt",        "std out");
-	test_dev_out!(Buffered!Sinked)("out_test2.txt", "  sink dev out");
-	test_dev_out!(Buffered)       ("out_test3.txt", "device dev out");
-}
