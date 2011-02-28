@@ -1035,6 +1035,193 @@ public:
 }+/
 
 
+/**
+fetch方法について改良案
+ChunkRange提供
+//Pool I/F提供版←必要なら置き換え可能
+*/
+//debug = B64Enc;
+template Base64(char Map62th = '+', char Map63th = '/', char Padding = '=')
+{
+	import std.base64 : StdBase64 = Base64!(Map62th, Map63th, Padding);
+	
+	debug (B64Enc) import std.stdio;
+
+	/**
+	*/
+	Encoder!Device encoder(Device)(Device device, size_t bufferSize = 2048)
+	{
+		return Encoder!Device(move(device), bufferSize);
+	}
+
+	/**
+	*/
+	struct Encoder(Device) if (isPool!Device)
+	{
+	private:
+		Device device;
+		char[] buf, view;
+		ubyte[3] cache; size_t cachelen;
+		bool eof;
+		bool isempty;
+
+	public:
+		/**
+		Ignore bufferSize (It's determined by pool size below)
+		*/
+		this(D)(D d, size_t bufferSize) if (is(D == Device))
+		{
+			move(d, device);
+			char[4] tmpbuf;	// Range I/Fならここでスタックを使えるが…
+			buf = tmpbuf;	// 初期バッファ割り当て
+			isempty = !fetch();
+			if (buf.ptr == tmpbuf.ptr)
+				buf = buf.dup;	// tmpbufを指さないようにコピー
+		}
+		/**
+		*/
+		this(A...)(A args, size_t bufferSize)
+		{
+			__ctor(Device(args), bufferSize);
+		}
+	
+		/**
+		primitives of input range.
+		*/
+		@property bool empty()
+		{
+			return isempty;
+		}
+		/// ditto
+		@property char[] front()
+		{
+			return view;
+		}
+		/// ditto
+		void popFront()
+		{
+		//	view = view[1 .. $];
+		//	// -inline -release前提で、こっちのほうが分岐予測ミスが少ない？
+		//	if (view.length == 0)
+			view = view[0 .. 0];
+				isempty = !fetch();
+		}
+	
+/+		@property const(char)[] available() const
+		{
+			return view;
+		}
+		void consume(size_t n)
+		in{ assert(n <= view.length); }
+		body
+		{
+			view = view[n .. $];
+		}+/
+	private:
+		bool fetch()
+		in { assert(view.length == 0); }
+		body
+		{
+			if (eof) return false;
+			
+			assert(buf.length >= 4);
+			
+			debug (B64Enc) writefln("");
+			
+			// device.fetchの繰り返しによってdevice.availableが最低2バイト以上たまることを要求する
+			// Needed that minimum size of the device pool should be more than 2 bytes.
+			if (cachelen)	// eating cache
+			{
+				debug (B64Enc) writefln("usecache 0: cache = [%(%02X %)]", cache[0..cachelen]);
+			  Continue:
+				if (device.fetch())
+				{
+					auto ava = device.available;
+					debug (B64Enc) writefln("usecache 1: ava.length = %s", ava.length);
+					if (cachelen + ava.length >= 3)
+					{
+						if (cachelen & 1)
+						{
+							cache[1] = ava[0];
+							cache[2] = ava[1];
+							StdBase64.encode(cache, buf[0..4]);
+							device.consume(2);
+						}
+						else
+						{
+							cache[2] = ava[0];
+							StdBase64.encode(cache, buf[0..4]);
+							device.consume(1);
+						}
+					}
+					else
+						goto Continue;
+				}
+				else
+				{
+					debug (B64Enc) writefln("usecache 2: cachelen = %s", cachelen);
+					eof = true;
+					if (cachelen & 1)
+					{
+						cache[1] = 0x00;
+						cache[2] = 0x00;
+						StdBase64.encode(cache, view = buf[0..4]);
+						buf[2] = Padding;
+						buf[3] = Padding;
+					}
+					else
+					{
+						cache[2] = 0x00;
+						StdBase64.encode(cache, view = buf[0..4]);
+						buf[3] = Padding;
+					}
+					view = buf[0..4];
+					return true;
+				}
+			}
+			else if (!device.fetch())
+			{
+				eof = true;
+				return false;
+			}
+		
+			auto ava = device.available;
+			immutable capnum = ava.length / 3;
+			immutable caplen = capnum * 3;
+			immutable buflen = capnum * 4;
+			debug (B64Enc) writefln(
+					"capture1: ava.length = %s, capnum = %s, caplen = %s, buflen = %s+%s",
+					ava.length, capnum, caplen, buflen, cachelen ? 4 : 0);
+			if (caplen)
+			{
+				// cachelen!=0 -> has encoded from cache
+				auto bs = cachelen ? 4 : 0, be = buflen+bs;
+				if (buf.length < be)
+					buf.length = be;
+				StdBase64.encode(ava[0..caplen], buf[bs..be]);
+				view = buf[0 .. be];
+			}
+			if ((cachelen = ava.length - caplen) != 0)
+			{
+				if (cachelen & 1)
+					cache[0] = ava[$-1];
+				else
+				{
+					cache[0] = ava[$-2];
+					cache[1] = ava[$-1];
+				}
+			}
+			device.consume(ava.length);
+			debug (B64Enc)
+				writefln(
+					"capture2: view.length = %s, cachelen = %s, ava.length = %s",
+					view.length, cachelen, ava.length);
+			return true;
+		}
+	}
+}
+
+
 /*
 	How to get PageSize:
 
