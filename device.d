@@ -1035,17 +1035,23 @@ public:
 }+/
 
 
+alias Base64Impl!() Base64;
+
 /**
 fetch方法について改良案
 ChunkRange提供
 //Pool I/F提供版←必要なら置き換え可能
 */
 //debug = B64Enc;
-template Base64(char Map62th = '+', char Map63th = '/', char Padding = '=')
+//debug = B64Dec;
+template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 {
-	import std.base64 : StdBase64 = Base64!(Map62th, Map63th, Padding);
+	static import std.base64;
+	alias std.base64.Base64Impl!(Map62th, Map63th, Padding) StdBase64;
 	
-	debug (B64Enc) import std.stdio;
+	import std.stdio;
+	void debugout(A...)(A args) { stderr.writefln(args); }
+	
 
 	/**
 	*/
@@ -1056,7 +1062,7 @@ template Base64(char Map62th = '+', char Map63th = '/', char Padding = '=')
 
 	/**
 	*/
-	struct Encoder(Device) if (isPool!Device)
+	struct Encoder(Device) if (isPool!Device && is(UnitType!Device == ubyte))
 	{
 	private:
 		Device device;
@@ -1093,7 +1099,7 @@ template Base64(char Map62th = '+', char Map63th = '/', char Padding = '=')
 			return isempty;
 		}
 		/// ditto
-		@property char[] front()
+		@property const(char)[] front()
 		{
 			return view;
 		}
@@ -1107,7 +1113,7 @@ template Base64(char Map62th = '+', char Map63th = '/', char Padding = '=')
 				isempty = !fetch();
 		}
 	
-/+		@property const(char)[] available() const
+	/+	@property const(char)[] available() const
 		{
 			return view;
 		}
@@ -1116,7 +1122,7 @@ template Base64(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		body
 		{
 			view = view[n .. $];
-		}+/
+		}	// +/
 	private:
 		bool fetch()
 		in { assert(view.length == 0); }
@@ -1126,57 +1132,38 @@ template Base64(char Map62th = '+', char Map63th = '/', char Padding = '=')
 			
 			assert(buf.length >= 4);
 			
-			debug (B64Enc) writefln("");
+			debug (B64Enc) debugout("");
 			
 			// device.fetchの繰り返しによってdevice.availableが最低2バイト以上たまることを要求する
 			// Needed that minimum size of the device pool should be more than 2 bytes.
 			if (cachelen)	// eating cache
 			{
-				debug (B64Enc) writefln("usecache 0: cache = [%(%02X %)]", cache[0..cachelen]);
+				debug (B64Enc) debugout("usecache 0: cache = [%(%02X %)]", cache[0..cachelen]);
 			  Continue:
 				if (device.fetch())
 				{
 					auto ava = device.available;
-					debug (B64Enc) writefln("usecache 1: ava.length = %s", ava.length);
+					debug (B64Enc) debugout("usecache 1: ava.length = %s", ava.length);
 					if (cachelen + ava.length >= 3)
 					{
-						if (cachelen & 1)
+						final switch (cachelen)
 						{
-							cache[1] = ava[0];
-							cache[2] = ava[1];
-							StdBase64.encode(cache, buf[0..4]);
-							device.consume(2);
+						case 1:	cache[1] = ava[0];
+								cache[2] = ava[1];	break;
+						case 2:	cache[2] = ava[0];	break;
 						}
-						else
-						{
-							cache[2] = ava[0];
-							StdBase64.encode(cache, buf[0..4]);
-							device.consume(1);
-						}
+						StdBase64.encode(cache[], buf[0..4]);
+						device.consume(3 - cachelen);
 					}
 					else
 						goto Continue;
 				}
 				else
 				{
-					debug (B64Enc) writefln("usecache 2: cachelen = %s", cachelen);
-					eof = true;
-					if (cachelen & 1)
-					{
-						cache[1] = 0x00;
-						cache[2] = 0x00;
-						StdBase64.encode(cache, view = buf[0..4]);
-						buf[2] = Padding;
-						buf[3] = Padding;
-					}
-					else
-					{
-						cache[2] = 0x00;
-						StdBase64.encode(cache, view = buf[0..4]);
-						buf[3] = Padding;
-					}
-					view = buf[0..4];
-					return true;
+					assert(device.available.length == 0);
+					debug (B64Enc) debugout("usecache 2: cachelen = %s", cachelen);
+					view = StdBase64.encode(cache[0..cachelen], view = buf[0..4]);
+					return (eof = true, eof);
 				}
 			}
 			else if (!device.fetch())
@@ -1189,31 +1176,183 @@ template Base64(char Map62th = '+', char Map63th = '/', char Padding = '=')
 			immutable capnum = ava.length / 3;
 			immutable caplen = capnum * 3;
 			immutable buflen = capnum * 4;
-			debug (B64Enc) writefln(
+			debug (B64Enc) debugout(
 					"capture1: ava.length = %s, capnum = %s, caplen = %s, buflen = %s+%s",
 					ava.length, capnum, caplen, buflen, cachelen ? 4 : 0);
 			if (caplen)
 			{
 				// cachelen!=0 -> has encoded from cache
-				auto bs = cachelen ? 4 : 0, be = buflen+bs;
+				auto bs = cachelen ? 4 : 0, be = bs+buflen;
 				if (buf.length < be)
 					buf.length = be;
-				StdBase64.encode(ava[0..caplen], buf[bs..be]);
-				view = buf[0 .. be];
+				view = buf[bs + StdBase64.encode(ava[0..caplen], buf[bs..be]).length];
 			}
 			if ((cachelen = ava.length - caplen) != 0)
 			{
-				if (cachelen & 1)
-					cache[0] = ava[$-1];
-				else
+				final switch (cachelen)
 				{
-					cache[0] = ava[$-2];
-					cache[1] = ava[$-1];
+				case 1:	cache[0] = ava[$-1];	break;
+				case 2:	cache[0] = ava[$-2];
+						cache[1] = ava[$-1];	break;
 				}
 			}
 			device.consume(ava.length);
 			debug (B64Enc)
-				writefln(
+				debugout(
+					"capture2: view.length = %s, cachelen = %s, ava.length = %s",
+					view.length, cachelen, ava.length);
+			return true;
+		}
+	}
+
+	/**
+	*/
+	auto decoder(Device)(Device device, size_t bufferSize = 2048)
+	{
+		alias UnitType!Device U;	// workaround for type evaluation bug
+		return Decoder!Device(move(device), bufferSize);
+	}
+
+	/**
+	*/
+	struct Decoder(Device) if (isPool!Device && is(UnitType!Device == char))
+	{
+	private:
+		Device device;
+		ubyte[] buf, view;
+		char[4] cache; size_t cachelen;
+		bool eof;
+		bool isempty;
+
+	public:
+		/**
+		Ignore bufferSize (It's determined by pool size below)
+		*/
+		this(D)(D d, size_t bufferSize) if (is(D == Device))
+		{
+			move(d, device);
+			ubyte[3] tmpbuf;	// Range I/Fならここでスタックを使えるが…
+			buf = tmpbuf;	// 初期バッファ割り当て
+			isempty = !fetch();
+			if (buf.ptr == tmpbuf.ptr)
+				buf = buf.dup;	// tmpbufを指さないようにコピー
+		}
+		/**
+		*/
+		this(A...)(A args, size_t bufferSize)
+		{
+			__ctor(Device(args), bufferSize);
+		}
+	
+		/**
+		primitives of input range.
+		*/
+		@property bool empty() const
+		{
+			return isempty;
+		}
+		/// ditto
+		@property const(ubyte)[] front()
+		{
+			return view;
+		}
+		/// ditto
+		void popFront()
+		{
+		//	view = view[1 .. $];
+		//	// -inline -release前提で、こっちのほうが分岐予測ミスが少ない？
+		//	if (view.length == 0)
+			view = view[0 .. 0];
+				isempty = !fetch();
+		}
+	
+	/+	@property const(ubyte)[] available() const
+		{
+			return view;
+		}
+		void consume(size_t n)
+		in{ assert(n <= view.length); }
+		body
+		{
+			view = view[n .. $];
+		}	// +/
+	private:
+		bool fetch()
+		{
+			if (eof) return false;
+			
+			assert(buf.length >= 3);
+			
+			// Needed that minimum size of the device pool should be more than 3 bytes.
+			if (cachelen)	// eating cache
+			{
+				debug (B64Dec) debugout("usecache 0: cache = [%(%02X %)]", cache[0..cachelen]);
+			  Continue:
+				if (device.fetch())
+				{
+					auto ava = device.available;
+					debug (B64Dec) debugout("usecache 1: ava.length = %s", ava.length);
+					if (cachelen + ava.length >= 4)
+					{
+						final switch (cachelen)
+						{
+						case 1:	cache[1] = ava[0];
+								cache[2] = ava[1];
+								cache[3] = ava[2];	break;
+						case 2:	cache[2] = ava[0];
+								cache[3] = ava[1];	break;
+						case 3:	cache[3] = ava[0];	break;
+						}
+						StdBase64.decode(cache[], buf[0..3]);
+						device.consume(4 - cachelen);
+					}
+					else
+						goto Continue;
+				}
+				else
+				{
+					assert(device.available.length == 0);
+					debug (B64Dec) debugout("usecache 2: cachelen = %s", cachelen);
+					view = StdBase64.decode(cache[0..cachelen], buf[0..3]);
+					return (eof = true, eof);
+				}
+			}
+			else if (!device.fetch())
+			{
+				eof = true;
+				return false;
+			}
+		
+			auto ava = device.available;
+			immutable capnum = ava.length / 4;
+			immutable caplen = capnum * 4;
+			immutable buflen = capnum * 3;
+			debug (B64Dec) debugout(
+					"capture1: ava.length = %s, capnum = %s, caplen = %s, buflen = %s, (cache = %s)",
+					ava.length, capnum, caplen, buflen, cachelen ? 4 : 0);
+			if (caplen)
+			{
+				// cachelen!=0 -> has encoded from cache
+				auto bs = cachelen ? 3 : 0, be = bs+buflen;
+				if (buf.length < be)
+					buf.length = be;
+				view = buf[0 .. bs + StdBase64.decode(ava[0..caplen], buf[bs..be]).length];
+			}
+			if ((cachelen = ava.length - caplen) != 0)
+			{
+				final switch (cachelen)
+				{
+				case 1:	cache[0] = ava[$-1];	break;
+				case 2:	cache[0] = ava[$-2];
+						cache[1] = ava[$-1];	break;
+				case 3:	cache[0] = ava[$-3];
+						cache[1] = ava[$-2];
+						cache[2] = ava[$-1];	break;
+				}
+			}
+			device.consume(ava.length);
+			debug (B64Dec)
+				debugout(
 					"capture2: view.length = %s, cachelen = %s, ava.length = %s",
 					view.length, cachelen, ava.length);
 			return true;

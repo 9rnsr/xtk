@@ -1,10 +1,11 @@
 ﻿import std.stdio;
 
 import std.base64;
+import device : Base64;
 import device_base64;
 
 
-enum bool Print = false;
+enum bool Print = true;
 
 import std.perf;
 void main(string[] args)
@@ -13,7 +14,7 @@ void main(string[] args)
 	
 	if (args.length == 2 || args.length == 3)
 	{
-		auto fname = args[1];
+/+		auto fname = args[1];
 		bool std_print, dev_print;
 		if (args.length == 3)
 		{
@@ -31,8 +32,8 @@ void main(string[] args)
 //		perf_dev_base64!(device_base64.base64_3)(fname, "dev base64 3 ", dev_print);
 		/////perf_dev_base64!(device_base64.base64_4)(fname, "dev base64 4 ", dev_print);
 		
-		perf_dev_base64_pool !(device_base64.base64_4p)(fname, "dev base64 4p", dev_print);
-		perf_dev_base64_chunk!(device_base64.base64_4x)(fname, "dev base64 4x", dev_print);
+		//perf_dev_base64_pool !(device_base64.base64_4p)(fname, "dev base64 4p", dev_print);
+		//perf_dev_base64_chunk!(device_base64.base64_4x)(fname, "dev base64 4x", dev_print);
 //		perf_dev_base64!(device_base64.base64_4c)(fname, "dev base64 4c", dev_print);
 		
 		perf_dev_base64_chunk!(device_base64.base64_5)(fname, "dev base64 5 ", dev_print);
@@ -73,6 +74,18 @@ Buffered!Fileのサイズを3の倍数にし、境界を合わせた上で
 	           dev base64 4c :   13591960 characters/sec
 	----
 +/
++/
+		
+		auto bout = buffered(dout, 2048);
+		
+		foreach (chunk; device.Base64.decoder(buffered(encoded!char(din), 2048)))
+		{
+		//	foreach (b; chunk)
+		//	{
+		//		bout.push(b);
+		//	}
+				bout.push(chunk);
+		}
 	}
 
 }
@@ -103,7 +116,7 @@ void perf_std_base64(string fname, string msg, bool p=false)
 }
 
 
-void perf_dev_base64_pool(alias Base64)(string fname, string msg, bool p=false)
+void perf_dev_base64_pool(alias B64)(string fname, string msg, bool p=false)
 {
 	static if (Print) if (p) writefln("----");
 	auto pc = new PerformanceCounter;
@@ -117,7 +130,7 @@ void perf_dev_base64_pool(alias Base64)(string fname, string msg, bool p=false)
 		while (v.length > 0)
 			s.push(v);
 	}
-	auto enc = Base64.encoder(Buffered!(device.File)(fname, 2040));
+	auto enc = B64.encoder(Buffered!(device.File)(fname, 2040));
 	while (enc.fetch())
 	{
 		auto chunk = enc.available;
@@ -142,7 +155,7 @@ void perf_dev_base64_pool(alias Base64)(string fname, string msg, bool p=false)
 	writefln("characters = %s", char_count);
 	writefln("%24s : %10.0f characters/sec", msg, char_count / (1.e-6 * pc.microseconds));
 }
-void perf_dev_base64(alias Base64)(string fname, string msg, bool p=false)
+void perf_dev_base64(alias B64)(string fname, string msg, bool p=false)
 {
 	static if (Print) if (p) writefln("----");
 	auto pc = new PerformanceCounter;
@@ -150,8 +163,8 @@ void perf_dev_base64(alias Base64)(string fname, string msg, bool p=false)
 	
 	size_t char_count = 0;
 	
-//	foreach (c; Base64.encoder(Buffered!(device.File)(fname, 2048)))
-	foreach (c; Base64.encoder(Buffered!(device.File)(fname, 2040), 2720))	//境界を合わせる
+//	foreach (c; B64.encoder(Buffered!(device.File)(fname, 2048)))
+	foreach (c; B64.encoder(Buffered!(device.File)(fname, 2040), 2720))	//境界を合わせる
 	{
 		++char_count;
 		static if (Print) if (p) write(c);
@@ -164,7 +177,7 @@ void perf_dev_base64(alias Base64)(string fname, string msg, bool p=false)
 	writefln("characters = %s", char_count);
 	writefln("%24s : %10.0f characters/sec", msg, char_count / (1.e-6 * pc.microseconds));
 }
-void perf_dev_base64_chunk(alias Base64)(string fname, string msg, bool p=false)
+void perf_dev_base64_chunk(alias B64)(string fname, string msg, bool p=false)
 {
 	static if (Print) if (p) writefln("----");
 	auto pc = new PerformanceCounter;
@@ -172,8 +185,8 @@ void perf_dev_base64_chunk(alias Base64)(string fname, string msg, bool p=false)
 	
 	size_t char_count = 0;
 	
-//	foreach (chunk; Base64.encoder(Buffered!(device.File)(fname, 2048)))
-	foreach (chunk; Base64.encoder(Buffered!(device.File)(fname, 2040), 2720))	//境界を合わせる
+//	foreach (chunk; B64.encoder(Buffered!(device.File)(fname, 2048)))
+	foreach (chunk; B64.encoder(Buffered!(device.File)(fname, 2040), 2720))	//境界を合わせる
 	{
 		foreach (c; chunk)
 		{
