@@ -1078,11 +1078,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		this(D)(D d, size_t bufferSize) if (is(D == Device))
 		{
 			move(d, device);
-			char[4] tmpbuf;	// Range I/Fならここでスタックを使えるが…
-			buf = tmpbuf;	// 初期バッファ割り当て
 			isempty = !fetch();
-			if (buf.ptr == tmpbuf.ptr)
-				buf = buf.dup;	// tmpbufを指さないようにコピー
 		}
 		/**
 		*/
@@ -1130,14 +1126,14 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		{
 			if (eof) return false;
 			
-			assert(buf.length >= 4);
-			
 			debug (B64Enc) debugout("");
 			
 			// device.fetchの繰り返しによってdevice.availableが最低2バイト以上たまることを要求する
 			// Needed that minimum size of the device pool should be more than 2 bytes.
 			if (cachelen)	// eating cache
 			{
+				assert(buf.length >= 4);
+				
 				debug (B64Enc) debugout("usecache 0: cache = [%(%02X %)]", cache[0..cachelen]);
 			  Continue:
 				if (device.fetch())
@@ -1195,6 +1191,8 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 				case 2:	cache[0] = ava[$-2];
 						cache[1] = ava[$-1];	break;
 				}
+				// It will be needed that buf.length >= 4 on next fetch.
+				if (buf.length < 4) buf.length = 4;
 			}
 			device.consume(ava.length);
 			debug (B64Enc)
@@ -1231,11 +1229,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		this(D)(D d, size_t bufferSize) if (is(D == Device))
 		{
 			move(d, device);
-			ubyte[3] tmpbuf;	// Range I/Fならここでスタックを使えるが…
-			buf = tmpbuf;	// 初期バッファ割り当て
 			isempty = !fetch();
-			if (buf.ptr == tmpbuf.ptr)
-				buf = buf.dup;	// tmpbufを指さないようにコピー
 		}
 		/**
 		*/
@@ -1281,11 +1275,11 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		{
 			if (eof) return false;
 			
-			assert(buf.length >= 3);
-			
 			// Needed that minimum size of the device pool should be more than 3 bytes.
 			if (cachelen)	// eating cache
 			{
+				assert(buf.length >= 3);
+				
 				debug (B64Dec) debugout("usecache 0: cache = [%(%02X %)]", cache[0..cachelen]);
 			  Continue:
 				if (device.fetch())
@@ -1349,6 +1343,8 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 						cache[1] = ava[$-2];
 						cache[2] = ava[$-1];	break;
 				}
+				// It will be needed that buf.length >= 4 on next fetch.
+				if (buf.length < 3) buf.length = 3;
 			}
 			device.consume(ava.length);
 			debug (B64Dec)
