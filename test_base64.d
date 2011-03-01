@@ -75,17 +75,8 @@ Buffered!Fileのサイズを3の倍数にし、境界を合わせた上で
 	----
 +/
 +/
-		
-		auto bout = buffered(dout, 2048);
-		
-		foreach (chunk; device.Base64.decoder(buffered(encoded!char(din), 2048)))
-		{
-		//	foreach (b; chunk)
-		//	{
-		//		bout.push(b);
-		//	}
-				bout.push(chunk);
-		}
+		auto base64in = device.Base64.decoder(device.buffered(device.encoded!char(din)));
+		device.copy(base64in, dout);
 	}
 
 }

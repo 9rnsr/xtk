@@ -532,7 +532,7 @@ public:
 
 /**
 */
-Buffered!(Device) buffered(Device)(Device device, size_t bufferSize)
+Buffered!(Device) buffered(Device)(Device device, size_t bufferSize = 4096)
 {
 	return typeof(return)(move(device), bufferSize);
 }
@@ -814,13 +814,11 @@ public:
 	*/
 	void put(const(E)[] data)
 	{
-		if (data.length == 0)
-			return;
-		
-		do
-		{	if (!device.push(data))
+		while (data.length > 0)
+		{
+			if (!device.push(data))
 				throw new Exception("");
-		}while (data.length > 0)
+		}
 	}
 }
 unittest
@@ -1049,9 +1047,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 	static import std.base64;
 	alias std.base64.Base64Impl!(Map62th, Map63th, Padding) StdBase64;
 	
-	import std.stdio;
 	void debugout(A...)(A args) { stderr.writefln(args); }
-	
 
 	/**
 	*/
@@ -1069,7 +1065,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		char[] buf, view;
 		ubyte[3] cache; size_t cachelen;
 		bool eof;
-		bool isempty;
+	//	bool isempty;
 
 	public:
 		/**
@@ -1078,7 +1074,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		this(D)(D d, size_t bufferSize) if (is(D == Device))
 		{
 			move(d, device);
-			isempty = !fetch();
+	//		isempty = !fetch();
 		}
 		/**
 		*/
@@ -1087,6 +1083,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 			__ctor(Device(args), bufferSize);
 		}
 	
+	/+
 		/**
 		primitives of input range.
 		*/
@@ -1107,9 +1104,10 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		//	if (view.length == 0)
 			view = view[0 .. 0];
 				isempty = !fetch();
-		}
+		}	// +/
 	
-	/+	@property const(char)[] available() const
+	//+
+		@property const(char)[] available() const
 		{
 			return view;
 		}
@@ -1119,7 +1117,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		{
 			view = view[n .. $];
 		}	// +/
-	private:
+		
 		bool fetch()
 		in { assert(view.length == 0); }
 		body
@@ -1220,7 +1218,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		ubyte[] buf, view;
 		char[4] cache; size_t cachelen;
 		bool eof;
-		bool isempty;
+	//	bool isempty;
 
 	public:
 		/**
@@ -1229,7 +1227,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		this(D)(D d, size_t bufferSize) if (is(D == Device))
 		{
 			move(d, device);
-			isempty = !fetch();
+	//		isempty = !fetch();
 		}
 		/**
 		*/
@@ -1238,6 +1236,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 			__ctor(Device(args), bufferSize);
 		}
 	
+	/+
 		/**
 		primitives of input range.
 		*/
@@ -1258,9 +1257,10 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		//	if (view.length == 0)
 			view = view[0 .. 0];
 				isempty = !fetch();
-		}
+		}	// +/
 	
-	/+	@property const(ubyte)[] available() const
+	//+
+		@property const(ubyte)[] available() const
 		{
 			return view;
 		}
@@ -1270,7 +1270,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		{
 			view = view[n .. $];
 		}	// +/
-	private:
+		
 		bool fetch()
 		{
 			if (eof) return false;
@@ -1430,3 +1430,58 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		}
 	}
 */
+
+
+/**
+*/
+ref Dst copy(Src, Dst)(ref Src src, ref Dst dst)
+	if (!(isInputRange!Src && isOutputRange!(Dst, ElementType!Src)) &&
+		(isPool!Src || isInputRange!Src) && (isSink!Dst || isOutputRange!Dst))
+{
+	void put_to_dst(E)(const(E)[] data)
+	{
+		while (data.length > 0)
+		{
+		  static if (isSink!Dst)
+		  {
+			if (!dst.push(data))
+				throw new Exception("");
+		  }
+		  static if (isOutputRange!(Dst, typeof(data[0])))
+		  {
+			dst.put(data);
+		  }
+		}
+	}
+	
+	static if (isPool!Src)
+	{
+		if (src.available.length == 0 && !src.fetch())
+			return dst;
+		
+		do
+		{
+			// almost same with Ranged.put
+			put_to_dst(src.available);
+			src.consume(src.available.length);
+		}while (src.fetch())
+	}
+	static if (isInputRange!Src)
+	{
+		static assert(isSink!Dst);
+		
+		static if (isArray!Src)
+		{
+			put_to_dst(src[]);
+		}
+		else
+		{
+			for (; !src.empty; src.popFront)
+			{
+				auto e = src.front;
+				put_to_dst(&e[0 .. 1]);
+			}
+		}
+	}
+	return dst;
+}
