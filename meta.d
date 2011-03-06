@@ -1,4 +1,4 @@
-module typecons.meta;
+module xtk.meta;
 
 public import std.traits, std.typecons, std.typetuple;
 
@@ -157,4 +157,14 @@ template isImplicitlyConvertible(alias P) if (is(P Q == Pack!(T), T...))
 	enum bool isImplicitlyConvertible = 
 		isImplicitlyConvertible!(P.field);
 }
+
+
+/**
+Return $(D true) if $(D_PARAM T) is template.
+*/
+template isTemplate(alias T)
+{
+	enum isTemplate = is(typeof(T)) && !__traits(compiles, { auto v = T; });
+}
+
 

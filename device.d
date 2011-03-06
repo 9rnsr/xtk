@@ -20,17 +20,13 @@ Bufferedの例:
 		auto bf = BufferedSink!File("test.txt", "r", 2048)
 
 */
-module device;
+module xtk.device;
 
 import std.array, std.algorithm, std.range, std.traits;
 import std.stdio;
-version(Windows)
-{
-	import core.sys.windows.windows;
-	enum : uint { ERROR_BROKEN_PIPE = 109 }
-}
+version(Windows) import xtk.windows;
 
-import device_utils;
+import xtk.workaroud;
 
 debug = Workarounds;
 debug (Workarounds)
@@ -41,6 +37,8 @@ debug (Workarounds)
 	debug (Issue5661)	alias issue5661fix_move move;
 	debug (Issue5663)	alias issue5663fix_Appender Appender;
 }
+
+import xtk.meta : isTemplate;
 
 /**
 Returns $(D true) if $(D_PARAM S) is a $(I source). A Source must define the

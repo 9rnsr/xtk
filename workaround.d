@@ -1,11 +1,4 @@
-
-/**
-Return $(D true) if $(D_PARAM T) is template.
-*/
-template isTemplate(alias T)
-{
-	enum isTemplate = is(typeof(T)) && !__traits(compiles, { auto v = T; });
-}
+module xtk.workaround;
 
 
 /**
