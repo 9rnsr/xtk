@@ -1,13 +1,13 @@
-module typecons.tagunion;
+module xtk.tagunion;
 
-public import typecons.match;
+public import xtk.match;
 version(unittest) import std.stdio;
 
 template TagUnion(Defines...)
 {
 private:
-	import std.metastrings;
-	import typecons.meta, typecons.match;
+	import xtk.metastrings;
+	import xtk.meta, xtk.match;
 
 	alias typeof(this) Self;
 	
@@ -250,8 +250,8 @@ public:
 	{
 		template GenerateTycons(Self=Self)
 		{
-			import std.metastrings;
-			import typecons.meta;
+			import xtk.metastrings;
+			import xtk.meta;
 			
 			template GenAlias(size_t n)
 			{

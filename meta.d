@@ -50,6 +50,33 @@ template mixinAll(mixins...)
 	}
 }
 
+/**
+ */
+template staticIota(int beg, int end, int step = 1)
+	if (step != 0)
+{
+	static if (beg + 1 >= end)
+	{
+		static if (beg >= end)
+			alias TypeTuple!() staticIota;
+		else
+			alias TypeTuple!(+beg) staticIota;
+	}
+	else
+	{
+		alias TypeTuple!(
+			staticIota!(beg, beg+(end-beg)/2),
+		    staticIota!(     beg+(end-beg)/2, end))
+			staticIota;
+	}
+}
+/// ditto
+template staticIota(int end)
+{
+	alias staticIota!(0, end) staticIota;
+}
+
+
 template staticZip(alias P, alias Q)
 {
 	static assert(P.length == Q.length);

@@ -1,8 +1,6 @@
-module typecons.match;
+module xtk.match;
 
-import typecons.meta;
-import std.range : ElementType;
-version(unittest) import std.stdio;
+private import xtk.meta;
 
 struct Ignore{};
 enum _ = Ignore();
@@ -32,7 +30,7 @@ public:
 	template FieldTypeTupleOf(A)
 	{
 		static if (isArray!A)
-			alias Repeat!(ElementType!A, Elem.length) FieldTypeTupleOf;
+			alias Repeat!(typeof(A.init[0]), Elem.length) FieldTypeTupleOf;
 		else static if (isTuple!A)
 			alias typeof(A.field) FieldTypeTupleOf;
 	}
@@ -281,7 +279,7 @@ struct p
 debug(match)
 unittest
 {
-	scope(success) writefln("unittest succeeded @ %s:%s", __FILE__, __LINE__);
+	scope(success) std.stdio.writefln("unittest succeeded @ %s:%s", __FILE__, __LINE__);
 	
 	int x, y;
 	double a, b;
@@ -388,7 +386,7 @@ body
 debug(match)
 unittest
 {
-	scope(success) writefln("unittest succeeded @ %s:%s", __FILE__, __LINE__);
+	scope(success) std.stdio.writefln("unittest succeeded @ %s:%s", __FILE__, __LINE__);
 
 	// statement version
 	int d;
@@ -449,7 +447,7 @@ struct tie
 debug(match)
 unittest
 {
-	scope(success) writefln("unittest succeeded @ %s:%s", __FILE__, __LINE__);
+	scope(success) std.stdio.writefln("unittest succeeded @ %s:%s", __FILE__, __LINE__);
 
 	int x, y;
 	tie[x, y] <<= [10, 20];
