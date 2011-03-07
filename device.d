@@ -742,24 +742,31 @@ Design:
 	これはバッファリングが必要になるためで、これはBufferedが担当する。
 	(バッファリングのサイズはUserSideが解決するべきと考え、deviceモジュールは暗黙に面倒を見ない)
 */
-Ranged!Device ranged(Device)(Device device)
+Ranged!D ranged(D)(D device)
 {
-	return Ranged!Device(move(device));
+  static if (isDeviced!D)
+	return device.original;
+  else
+	return Ranged!D(move(device));
 }
 
 /// ditto
-template Ranged(alias Device) if (isTemplate!Device)
+template Ranged(alias Filter) if (isTemplate!Filter)
 {
 	template Ranged(T...)
 	{
-		alias .Ranged!(Device!T) Ranged;
+		alias .Ranged!(Filter!T) Ranged;
 	}
 }
 
 /// ditto
-struct Ranged(Device) if (isPool!Device || isSink!Device)
+struct Ranged(Device)
+	if (!isDeviced!Device && (isPool!Device || isSink!Device))
 {
 private:
+	alias Device Original;
+	alias device original;
+
 	alias UnitType!Device E;
 	Device device;
 	bool eof;
@@ -845,6 +852,41 @@ unittest
 	std.file.remove(fname);
 }
 
+/*
+*/
+template Ranged(D) if (isDeviced!D)
+{
+	alias D.Original Ranged;
+}
+unittest
+{
+	int[] a;
+	auto a2 = ranged(deviced(a));
+	static assert(is(typeof(a2) == int[]));
+}
+
+/*
+*/
+template isRanged(R)
+{
+	static if (is(R _ : Ranged!D, D))
+		enum isRanged = true;
+	else
+		enum isRanged = false;
+}
+unittest
+{
+	static struct DummySink
+	{
+		bool push(ref const(int)[] data){ return false; }
+	}
+	static assert(isSink!DummySink);
+	
+	auto d = DummySink();
+	auto r = ranged(d);
+	static assert(isRanged!(typeof(r)));
+}
+
 
 /**
 converts range to device (source, pool, sink)
@@ -852,45 +894,51 @@ Design:
 	$(D Deviced) can receive an array, but doesn't treat $(D ElementType!(E[])),
 	but also $(D E).
 */
-Deviced!(Device) deviced(Device)(Device device)
+Deviced!R deviced(R)(R range)
 {
-	return typeof(return)(move(device));
+  static if (isRanged!R)
+	return range.original;
+  else
+	return Deviced!R(move(range));
 }
 
 /// ditto
-template Deviced(alias Device) if (isTemplate!Device)
+template Deviced(alias Filter) if (isTemplate!Filter)
 {
 	template Deviced(T...)
 	{
-		alias .Deviced!(Device!T) Deviced;
+		alias .Deviced!(Filter!T) Deviced;
 	}
 }
 
 /// ditto
-struct Deviced(Range)
-	if (isInputRange!Range || isOutputRange!Range)
+struct Deviced(R)
+	if (!isRanged!R && (isInputRange!R || __traits(hasMember, R, "put")))
 {
 private:
-	Range range;
-	static if (isInputRange!Range)
+	alias R Original;
+	alias range original;
+
+	R range;
+	static if (isInputRange!R)
 	{
-		static if (isArray!Range)
-			alias typeof(Range.init[0]) E;
+		static if (isArray!R)
+			alias typeof(R.init[0]) E;
 		else
-			alias ElementType!Range E;
+			alias ElementType!R E;
 	}
 
 public:
-	this(R)(R r) if (is(R == Range))
+	this(R)(R r) if (is(R == R))
 	{
 		move(r, range);
 	}
 	this(A...)(A args)
 	{
-		__ctor(Range(args));
+		__ctor(R(args));
 	}
 
-  static if (isInputRange!Range)
+  static if (isInputRange!R)
   {
 	/**
 	*/
@@ -900,7 +948,7 @@ public:
 			return false;
 		else
 		{
-		  static if (isArray!Range)
+		  static if (isArray!R)
 		  {
 			auto len = min(range.length, data.length);
 			data[0 .. len] = range[0 .. len];
@@ -918,7 +966,7 @@ public:
 		}
 	}
   }
-  static if (isArray!Range)
+  static if (isArray!R)
   {
 	/**
 	*/
@@ -941,13 +989,13 @@ public:
   }
 
 	bool push(E)(ref const(E)[] data)
-		if (isOutputRange!(Range, E))
+		if (isOutputRange!(R, E))
 	{
 		if (range.empty)
 			return false;
 		
 		int written;
-		static if (isArray!Range)
+		static if (isArray!R)
 		{
 			written = (data.length > range.length ? range.length : data.length);
 			range[0 .. written] = data[0 .. written];
@@ -992,6 +1040,34 @@ unittest
 	assert(z == [70, 80]);
 	
 	assert(a == [10, 20, 3, 4, 50]);
+}
+
+/*
+*/
+template Deviced(R) if (isRanged!R)
+{
+	alias R.Original Deviced;
+}
+unittest
+{
+	static struct DummySink
+	{
+		bool push(ref const(int)[] data){ return false; }
+	}
+	
+	auto d = DummySink();
+	auto d2 = deviced(ranged(d));
+	static assert(is(typeof(d2) == DummySink));
+}
+
+/*
+*/
+template isDeviced(D)
+{
+	static if (is(D _ == Deviced!R, R))
+		enum isDeviced = true;
+	else
+		enum isDeviced = false;
 }
 
 
