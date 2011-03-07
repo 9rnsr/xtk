@@ -14,6 +14,8 @@ string format(Char, A...)(in Char[] fmt, A args)
 }
 unittest
 {
+	scope(failure) std.stdio.writefln("unittest@%s:%s failed", __FILE__, __LINE__);
+	
 	auto s = format("%(%02X %)", [1,2,3]);
 	assert(s == "01 02 03");
 }

@@ -827,6 +827,8 @@ public:
 }
 unittest
 {
+	scope(failure) std.stdio.writefln("unittest@%s:%s failed", __FILE__, __LINE__);
+	
 	auto fname = "dummy.txt";
 	{	auto r = ranged(Sinked!File(fname, "w"));
 		ubyte[] data = [1,2,3];
@@ -841,6 +843,155 @@ unittest
 		}
 	}
 	std.file.remove(fname);
+}
+
+
+/**
+converts range to device (source, pool, sink)
+Design:
+	$(D Deviced) can receive an array, but doesn't treat $(D ElementType!(E[])),
+	but also $(D E).
+*/
+Deviced!(Device) deviced(Device)(Device device)
+{
+	return typeof(return)(move(device));
+}
+
+/// ditto
+template Deviced(alias Device) if (isTemplate!Device)
+{
+	template Deviced(T...)
+	{
+		alias .Deviced!(Device!T) Deviced;
+	}
+}
+
+/// ditto
+struct Deviced(Range)
+	if (isInputRange!Range || isOutputRange!Range)
+{
+private:
+	Range range;
+	static if (isInputRange!Range)
+	{
+		static if (isArray!Range)
+			alias typeof(Range.init[0]) E;
+		else
+			alias ElementType!Range E;
+	}
+
+public:
+	this(R)(R r) if (is(R == Range))
+	{
+		move(r, range);
+	}
+	this(A...)(A args)
+	{
+		__ctor(Range(args));
+	}
+
+  static if (isInputRange!Range)
+  {
+	/**
+	*/
+	bool pull(ref E[] data)
+	{
+		if (range.empty)
+			return false;
+		else
+		{
+		  static if (isArray!Range)
+		  {
+			auto len = min(range.length, data.length);
+			data[0 .. len] = range[0 .. len];
+			range = range[len .. $];
+		  }
+		  else
+		  {
+			while (data.length && !range.empty)
+			{
+				data[0] = range.front;
+				range.popFront();
+			}
+		  }
+			return true;
+		}
+	}
+  }
+  static if (isArray!Range)
+  {
+	/**
+	*/
+	@property const(E)[] available() const
+	{
+		return range;
+	}
+	/**
+	*/
+	bool fetch()
+	{
+		return !range.empty;
+	}
+	/**
+	*/
+	void consume(size_t n)
+	{
+		range.popFrontN(n);
+	}
+  }
+
+	bool push(E)(ref const(E)[] data)
+		if (isOutputRange!(Range, E))
+	{
+		if (range.empty)
+			return false;
+		
+		int written;
+		static if (isArray!Range)
+		{
+			written = (data.length > range.length ? range.length : data.length);
+			range[0 .. written] = data[0 .. written];
+			range = range[written .. $];
+		}
+		else
+		{
+			while (!range.empty && !data.empty)
+			{
+				put(range, data.front);
+				++written;
+			}
+		}
+		data = data[written .. $];
+		
+		return true;
+	}
+}
+unittest
+{
+	scope(failure) std.stdio.writefln("unittest@%s:%s failed", __FILE__, __LINE__);
+	
+	auto a = [1, 2, 3, 4, 5];
+	auto d = deviced(a);
+	
+	auto x = [10, 20];
+	d.push(x);
+	assert(x == []);
+	assert(d.available == [3, 4, 5]);
+	
+	d.consume(2);
+	assert(d.fetch() == true);
+	assert(d.available == [5]);
+	
+	auto y = [50, 60];
+	assert(d.push(y));
+	assert(y == [60]);
+	
+	assert(d.fetch() == false);
+	auto z = [70,80];
+	assert(d.push(z) == false);
+	assert(z == [70, 80]);
+	
+	assert(a == [10, 20, 3, 4, 50]);
 }
 
 

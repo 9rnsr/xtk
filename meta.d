@@ -143,6 +143,8 @@ template staticReduce(alias F, alias Init, T...)
 }
 unittest
 {
+	scope(failure) std.stdio.writefln("unittest@%s:%s failed", __FILE__, __LINE__);
+	
 	static assert(staticReduce!(q{A==""?B:A~", "~B}, "", TypeTuple!("AAA", "BBB", "CCC")) == "AAA, BBB, CCC");
 }
 
