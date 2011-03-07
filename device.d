@@ -26,7 +26,7 @@ import std.array, std.algorithm, std.range, std.traits;
 import std.stdio;
 version(Windows) import xtk.windows;
 
-import xtk.workaroud;
+import xtk.workaround;
 
 debug = Workarounds;
 debug (Workarounds)
