@@ -41,21 +41,21 @@ debug (Workarounds)
 import xtk.meta : isTemplate;
 
 /**
-Returns $(D true) if $(D_PARAM S) is a $(I source). A Source must define the
+Returns $(D true) if $(D_PARAM D) is a $(I source). A Source must define the
 primitive $(D pull). 
 */
-template isSource(S)
+template isSource(D)
 {
-	enum isSource = __traits(hasMember, S, "pull");
+	enum isSource = __traits(hasMember, D, "pull");
 }
 
 ///ditto
-template isSource(S, E)
+template isSource(D, E)
 {
 	enum isSource = is(typeof({
-		S s;
+		D d;
 		E[] buf;
-		while (s.pull(buf)){}
+		while (d.pull(buf)){}
 	}()));
 }
 
@@ -65,46 +65,44 @@ You can assume that pool is not $(D fetch)-ed yet.$(BR)
 定義では、poolの初期状態は長さ0の$(D available)を持つ。$(BR)
 これはpoolがまだ一度も$(D fetch)されたことがないと見なすことができる。$(BR)
 */
-template isPool(S)
+template isPool(D)
 {
 	enum isPool = is(typeof({
-		S s;
-		while (s.fetch())
+		D d;
+		while (d.fetch())
 		{
-			auto buf = s.available;
+			auto buf = d.available;
 			size_t n;
-			s.consume(n);
+			d.consume(n);
 		}
 	}()));
 }
 
 /**
-Returns $(D true) if $(D_PARAM S) is a $(I sink). A Source must define the
+Returns $(D true) if $(D_PARAM D) is a $(I sink). A Source must define the
 primitive $(D push). 
 */
-template isSink(S)
+template isSink(D)
 {
-//	__traits(allMembers, T)にはstatic ifで切られたものも含まれている…
-//	enum isSink = hasMember!(S, "push");
-	enum isSink = __traits(hasMember, S, "push");
+	enum isSink = __traits(hasMember, D, "push");
 }
 
 ///ditto
-template isSink(S, E)
+template isSink(D, E)
 {
 	enum isSink = is(typeof({
-		S s;
+		D d;
 		const(E)[] buf;
-		do{}while (s.push(buf))
+		do{}while (d.push(buf))
 	}()));
 }
 
 /**
 Device supports both primitives of source and sink.
 */
-template isDevice(S)
+template isDevice(D)
 {
-	enum isDevice = isSource!S && isSink!S;
+	enum isDevice = isSource!D && isSink!D;
 }
 
 /**
@@ -112,16 +110,16 @@ Retruns element type of device.
 Naming:
 	More good naming.
 */
-template UnitType(S)
-	if (isSource!S || isPool!S || isSink!S)
+template UnitType(D)
+	if (isSource!D || isPool!D || isSink!D)
 {
-	static if (isSource!S)
-		alias Unqual!(typeof(ParameterTypeTuple!(typeof(S.init.pull))[0].init[0])) UnitType;
-	static if (isPool!S)
-		alias Unqual!(typeof(S.init.available[0])) UnitType;
-	static if (isSink!S)
+	static if (isSource!D)
+		alias Unqual!(typeof(ParameterTypeTuple!(typeof(D.init.pull))[0].init[0])) UnitType;
+	static if (isPool!D)
+		alias Unqual!(typeof(D.init.available[0])) UnitType;
+	static if (isSink!D)
 	{
-		alias Unqual!(typeof(ParameterTypeTuple!(typeof(S.init.push))[0].init[0])) UnitType;
+		alias Unqual!(typeof(ParameterTypeTuple!(typeof(D.init.push))[0].init[0])) UnitType;
 	}
 }
 
@@ -133,14 +131,14 @@ enum SeekPos {
 }
 
 /**
-Check that $(D_PARAM S) is seekable source or sink.
+Check that $(D_PARAM D) is seekable source or sink.
 Seekable device supports $(D seek) primitive.
 */
-template isSeekable(S)
+template isSeekable(D)
 {
 	enum isSeekable = is(typeof({
-		S s;
-		s.seek(0, SeekPos.Set);
+		D d;
+		d.seek(0, SeekPos.Set);
 	}()));
 }
 
@@ -310,46 +308,46 @@ static assert(isDevice!File);
 
 
 /**
-Modifiers to limit primitives of $(D_PARAM Device) to source.
+Modifiers to limit primitives of $(D_PARAM D) to source.
 */
-Sourced!Device sourced(Device)(Device d)
+Sourced!D sourced(D)(D device)
 {
-	return Sourced!Device(d);
+	return Sourced!D(device);
 }
 
 /// ditto
-template Sourced(alias Device) if (isTemplate!Device)
+template Sourced(alias D) if (isTemplate!D)
 {
-	template Sourced(T...)
+	template Sourced(Args...)
 	{
-		alias .Sourced!(Device!T) Sourced;
+		alias .Sourced!(D!Args) Sourced;
 	}
 }
 
 /// ditto
-template Sourced(Device)
+template Sourced(D)
 {
-  static if (isDevice!Device)
+  static if (isDevice!D)
   {
 	struct Sourced
 	{
 	private:
-		alias UnitType!Device E;
-		Device device;
+		alias UnitType!D E;
+		D device;
 	
 	public:
 		/**
 		*/
-		this(D)(D d) if (is(D == Device))
+		this(Device)(Device d) if (is(Device == D))
 		{
 			move(d, device);
 		}
 		/**
-		Delegate construction to $(D_PARAM Device).
+		Delegate construction to $(D_PARAM D).
 		*/
 		this(A...)(A args)
 		{
-			__ctor(Device(args));
+			__ctor(D(args));
 		}
 	
 		/**
@@ -360,54 +358,54 @@ template Sourced(Device)
 		}
 	}
   }
-  else static if (isSource!Device)
-	alias Device Sourced;
+  else static if (isSource!D)
+	alias D Sourced;
   else
-	static assert(0, "Cannot limit "~Device.stringof~" as source");
+	static assert(0, "Cannot limit "~D.stringof~" as source");
 }
 
 
 /**
-Modifiers to limit primitives of $(D_PARAM Device) to sink.
+Modifiers to limit primitives of $(D_PARAM D) to sink.
 */
-Sinked!Device sinked(Device)(Device d)
+Sinked!D sinked(D)(D device)
 {
-	return Sinked!Device(d);
+	return Sinked!D(device);
 }
 
 /// ditto
-template Sinked(alias Device) if (isTemplate!Device)
+template Sinked(alias D) if (isTemplate!D)
 {
-	template Sinked(T...)
+	template Sinked(Args...)
 	{
-		alias .Sinked!(Device!T) Sinked;
+		alias .Sinked!(D!Args) Sinked;
 	}
 }
 
 /// ditto
-template Sinked(Device)
+template Sinked(D)
 {
-  static if (isDevice!Device)
+  static if (isDevice!D)
   {
 	struct Sinked
 	{
 	private:
-		alias UnitType!Device E;
-		Device device;
+		alias UnitType!D E;
+		D device;
 	
 	public:
 		/**
 		*/
-		this(D)(D d) if (is(D == Device))
+		this(Device)(Device d) if (is(Device == D))
 		{
 			move(d, device);
 		}
 		/**
-		Delegate construction to $(D_PARAM Device).
+		Delegate construction to $(D_PARAM D).
 		*/
 		this(A...)(A args)
 		{
-			__ctor(Device(args));
+			__ctor(D(args));
 		}
 	
 		/**
@@ -418,10 +416,10 @@ template Sinked(Device)
 		}
 	}
   }
-  else static if (isSink!Device)
-	alias Device Sinked;
+  else static if (isSink!D)
+	alias D Sinked;
   else
-	static assert(0, "Cannot limit "~Device.stringof~" as sink");
+	static assert(0, "Cannot limit "~D.stringof~" as sink");
 }
 
 
@@ -433,11 +431,11 @@ Encoded!(Device, E) encoded(E, Device)(Device device)
 }
 
 /// ditto
-template Encoded(alias Device) if (isTemplate!Device)
+template Encoded(alias D) if (isTemplate!D)
 {
-	template Encoded(T...)
+	template Encoded(Args...)
 	{
-		alias .Encoded!(Device!T) Encoded;
+		alias .Encoded!(D!Args) Encoded;
 	}
 }
 
@@ -524,36 +522,36 @@ public:
 
 /**
 */
-Buffered!(Device) buffered(Device)(Device device, size_t bufferSize = 4096)
+Buffered!(D) buffered(D)(D device, size_t bufferSize = 4096)
 {
 	return typeof(return)(move(device), bufferSize);
 }
 
 /// ditto
-template Buffered(alias Device) if (isTemplate!Device)
+template Buffered(alias D) if (isTemplate!D)
 {
-	template Buffered(T...)
+	template Buffered(Args...)
 	{
-		alias .Buffered!(Device!T) Buffered;
+		alias .Buffered!(D!Args) Buffered;
 	}
 }
 
 /// ditto
-struct Buffered(Device)
-	if (isSource!Device || isSink!Device)
+struct Buffered(D)
+	if (isSource!D || isSink!D)
 {
 private:
-	alias UnitType!Device E;
-	Device device;
+	alias UnitType!D E;
+	D device;
 	E[] buffer;
-	static if (isSink  !Device) size_t rsv_start = 0, rsv_end = 0;
-	static if (isSource!Device) size_t ava_start = 0, ava_end = 0;
-	static if (isDevice!Device) long base_pos = 0;
+	static if (isSink  !D) size_t rsv_start = 0, rsv_end = 0;
+	static if (isSource!D) size_t ava_start = 0, ava_end = 0;
+	static if (isDevice!D) long base_pos = 0;
 
 public:
 	/**
 	*/
-	this(D)(D d, size_t bufferSize) if (is(D == Device))
+	this(Device)(Device d, size_t bufferSize) if (is(Device == D))
 	{
 		move(d, device);
 		buffer.length = bufferSize;
@@ -562,36 +560,36 @@ public:
 	*/
 	this(A...)(A args, size_t bufferSize)
 	{
-		__ctor(Device(args), bufferSize);
+		__ctor(D(args), bufferSize);
 	}
 	
-  static if (isSink!Device)
+  static if (isSink!D)
 	~this()
 	{
 		while (reserves.length > 0)
 			flush();
 	}
 
-  static if (isSource!Device)
+  static if (isSource!D)
 	/**
 	primitives of pool.
 	*/
 	bool fetch()
 	body
 	{
-	  static if (isDevice!Device)
+	  static if (isDevice!D)
 		bool empty_reserves = (reserves.length == 0);
 	  else
 		enum empty_reserves = true;
 		
 		if (empty_reserves && available.length == 0)
 		{
-			static if (isDevice!Device)	base_pos += ava_end;
-			static if (isDevice!Device)	rsv_start = rsv_end = 0;
-										ava_start = ava_end = 0;
+			static if (isDevice!D)	base_pos += ava_end;
+			static if (isDevice!D)	rsv_start = rsv_end = 0;
+									ava_start = ava_end = 0;
 		}
 		
-	  static if (isDevice!Device)
+	  static if (isDevice!D)
 		device.seek(base_pos + ava_end, SeekPos.Set);
 		
 		auto v = buffer[ava_end .. $];
@@ -603,14 +601,14 @@ public:
 		return result;
 	}
 	
-  static if (isSource!Device)
+  static if (isSource!D)
 	/// ditto
 	@property const(E)[] available() const
 	{
 		return buffer[ava_start .. ava_end];
 	}
 	
-  static if (isSource!Device)
+  static if (isSource!D)
 	/// ditto
 	void consume(size_t n)
 	in { assert(n <= available.length); }
@@ -619,14 +617,14 @@ public:
 		ava_start += n;
 	}
 
-  static if (isSink!Device)
+  static if (isSink!D)
   {
 	/*
 	primitives of output pool?
 	*/
 	private @property E[] usable()
 	{
-	  static if (isDevice!Device)
+	  static if (isDevice!D)
 		return buffer[ava_start .. $];
 	  else
 		return buffer[rsv_end .. $];
@@ -638,7 +636,7 @@ public:
 	// ditto
 	private void commit(size_t n)
 	{
-	  static if (isDevice!Device)
+	  static if (isDevice!D)
 	  {
 		assert(ava_start + n <= buffer.length);
 		ava_start += n;
@@ -653,7 +651,7 @@ public:
 	}
   }
 	
-  static if (isSink!Device)
+  static if (isSink!D)
 	/**
 	flush buffer.
 	primitives of output pool?
@@ -662,7 +660,7 @@ public:
 	in { assert(reserves.length > 0); }
 	body
 	{
-	  static if (isDevice!Device)
+	  static if (isDevice!D)
 		device.seek(base_pos + rsv_start, SeekPos.Set);
 		
 		auto rsv = buffer[rsv_start .. rsv_end];
@@ -671,22 +669,22 @@ public:
 		{
 			rsv_start = rsv_end - rsv.length;
 			
-		  static if (isDevice!Device)
+		  static if (isDevice!D)
 			bool empty_available = (available.length == 0);
 		  else
 			enum empty_available = true;
 			
 			if (reserves.length == 0 && empty_available)
 			{
-				static if (isDevice!Device)	base_pos += ava_end;
-				static if (isDevice!Device)	ava_start = ava_end = 0;
+				static if (isDevice!D)	base_pos += ava_end;
+				static if (isDevice!D)	ava_start = ava_end = 0;
 											rsv_start = rsv_end = 0;
 			}
 		}
 		return result;
 	}
 
-  static if (isSink!Device)
+  static if (isSink!D)
 	/**
 	primitive of sink.
 	*/
@@ -751,43 +749,43 @@ Ranged!D ranged(D)(D device)
 }
 
 /// ditto
-template Ranged(alias Filter) if (isTemplate!Filter)
+template Ranged(alias D) if (isTemplate!D)
 {
-	template Ranged(T...)
+	template Ranged(Args...)
 	{
-		alias .Ranged!(Filter!T) Ranged;
+		alias .Ranged!(D!Args) Ranged;
 	}
 }
 
 /// ditto
-struct Ranged(Device)
-	if (!isDeviced!Device && (isPool!Device || isSink!Device))
+struct Ranged(D)
+	if (!isDeviced!D && (isPool!D || isSink!D))
 {
 private:
-	alias Device Original;
+	alias D Original;
 	alias device original;
 
-	alias UnitType!Device E;
-	Device device;
+	alias UnitType!D E;
+	D device;
 	bool eof;
 
 public:
 	/**
 	*/
-	this(D)(D d) if (is(D == Device))
+	this(Device)(Device d) if (is(Device == D))
 	{
 		move(d, device);
-	  static if (isPool!Device)
+	  static if (isPool!D)
 		eof = !device.fetch();
 	}
 	/**
 	*/
 	this(A...)(A args)
 	{
-		__ctor(Device(args));
+		__ctor(D(args));
 	}
 
-  static if (isPool!Device)
+  static if (isPool!D)
   {
 	/**
 	primitives of input range.
@@ -812,7 +810,7 @@ public:
 	}
   }
 
-  static if (isSink!Device)
+  static if (isSink!D)
   {
 	/**
 	primitive of output range.
@@ -865,8 +863,7 @@ unittest
 	static assert(is(typeof(a2) == int[]));
 }
 
-/*
-*/
+/// 
 template isRanged(R)
 {
 	static if (is(R _ : Ranged!D, D))
@@ -903,11 +900,11 @@ Deviced!R deviced(R)(R range)
 }
 
 /// ditto
-template Deviced(alias Filter) if (isTemplate!Filter)
+template Deviced(alias D) if (isTemplate!D)
 {
-	template Deviced(T...)
+	template Deviced(Args...)
 	{
-		alias .Deviced!(Filter!T) Deviced;
+		alias .Deviced!(D!Args) Deviced;
 	}
 }
 
@@ -1060,8 +1057,7 @@ unittest
 	static assert(is(typeof(d2) == DummySink));
 }
 
-/*
-*/
+/// 
 template isDeviced(D)
 {
 	static if (is(D _ == Deviced!R, R))
@@ -1282,17 +1278,17 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 
 	/**
 	*/
-	Encoder!Device encoder(Device)(Device device, size_t bufferSize = 2048)
+	Encoder!D encoder(D)(D device, size_t bufferSize = 2048)
 	{
-		return Encoder!Device(move(device), bufferSize);
+		return Encoder!D(move(device), bufferSize);
 	}
 
 	/**
 	*/
-	struct Encoder(Device) if (isPool!Device && is(UnitType!Device == ubyte))
+	struct Encoder(D) if (isPool!D && is(UnitType!D == ubyte))
 	{
 	private:
-		Device device;
+		D device;
 		char[] buf, view;
 		ubyte[3] cache; size_t cachelen;
 		bool eof;
@@ -1302,7 +1298,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		/**
 		Ignore bufferSize (It's determined by pool size below)
 		*/
-		this(D)(D d, size_t bufferSize) if (is(D == Device))
+		this(Device)(Device d, size_t bufferSize) if (is(Device == D))
 		{
 			move(d, device);
 	//		isempty = !fetch();
@@ -1311,7 +1307,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		*/
 		this(A...)(A args, size_t bufferSize)
 		{
-			__ctor(Device(args), bufferSize);
+			__ctor(D(args), bufferSize);
 		}
 	
 	/+
@@ -1434,18 +1430,18 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 
 	/**
 	*/
-	auto decoder(Device)(Device device, size_t bufferSize = 2048)
+	auto decoder(D)(D device, size_t bufferSize = 2048)
 	{
-		alias UnitType!Device U;	// workaround for type evaluation bug
-		return Decoder!Device(move(device), bufferSize);
+		alias UnitType!D U;	// workaround for type evaluation bug
+		return Decoder!D(move(device), bufferSize);
 	}
 
 	/**
 	*/
-	struct Decoder(Device) if (isPool!Device && is(UnitType!Device == char))
+	struct Decoder(D) if (isPool!D && is(UnitType!D == char))
 	{
 	private:
-		Device device;
+		D device;
 		ubyte[] buf, view;
 		char[4] cache; size_t cachelen;
 		bool eof;
@@ -1455,7 +1451,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		/**
 		Ignore bufferSize (It's determined by pool size below)
 		*/
-		this(D)(D d, size_t bufferSize) if (is(D == Device))
+		this(Device)(Device d, size_t bufferSize) if (is(Device == D))
 		{
 			move(d, device);
 	//		isempty = !fetch();
@@ -1464,7 +1460,7 @@ template Base64Impl(char Map62th = '+', char Map63th = '/', char Padding = '=')
 		*/
 		this(A...)(A args, size_t bufferSize)
 		{
-			__ctor(Device(args), bufferSize);
+			__ctor(D(args), bufferSize);
 		}
 	
 	/+
