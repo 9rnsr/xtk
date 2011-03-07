@@ -1,4 +1,4 @@
-module xtk.format;
+	module xtk.format;
 
 import xtk.device;
 import std.format : formattedWrite;
@@ -76,5 +76,6 @@ void writef(Sink, A...)(ref Sink sink, string fmt, A args)
 
 void writefln(Sink, A...)(ref Sink sink, string fmt, A args)
 {
-	writef(sink, fmt, args, '\n');
+	writef(sink, fmt, args);
+	writef(sink, "\n");
 }
