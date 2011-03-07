@@ -55,10 +55,7 @@ template isSource(S, E)
 	enum isSource = is(typeof({
 		S s;
 		E[] buf;
-		while(s.pull(buf))
-		{
-			// ...
-		} 
+		while (s.pull(buf)){}
 	}()));
 }
 
@@ -98,10 +95,7 @@ template isSink(S, E)
 	enum isSink = is(typeof({
 		S s;
 		const(E)[] buf;
-		do
-		{
-			// ...
-		}while (s.push(buf))
+		do{}while (s.push(buf))
 	}()));
 }
 
@@ -742,6 +736,11 @@ Design:
 	同時に提供できないため、これをWrapするRangedが必要となる。
 Design:
 	OutputRangeはデータがすべて書き込まれるまでSinkのpushを繰り返す。
+
+Design:
+	RangedはSourceを直接Rangeには変換しない。
+	これはバッファリングが必要になるためで、これはBufferedが担当する。
+	(バッファリングのサイズはUserSideが解決するべきと考え、deviceモジュールは暗黙に面倒を見ない)
 */
 Ranged!Device ranged(Device)(Device device)
 {
@@ -807,9 +806,15 @@ public:
   }
 
   static if (isSink!Device)
+  {
 	/**
 	primitive of output range.
 	*/
+	void put(const(E) data)
+	{
+		put((&data)[0 .. 1]);
+	}
+	/// ditto
 	void put(const(E)[] data)
 	{
 		while (data.length > 0)
@@ -818,6 +823,7 @@ public:
 				throw new Exception("");
 		}
 	}
+  }
 }
 unittest
 {
