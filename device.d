@@ -462,6 +462,7 @@ public:
 		auto result = device.pull(v);
 		if (result)
 		{
+//			writefln("encoded.pull : buf = %(%02X %)", cast(ubyte[])buf);
 			static if (E.sizeof > 1) assert(v.length % E.sizeof == 0);
 			buf = cast(E[])v;
 		}
@@ -1075,6 +1076,11 @@ else
 }
 
 
+SlicableInput!D slicableInput(D)(D device, size_t chunkSize)
+{
+	return SlicableInput!D(move(device), chunkSize);
+}
+
 /**
 */
 struct SlicableInput(D)
@@ -1090,17 +1096,50 @@ private:
 			Chunk* next;
 			size_t lastlen;
 		}
-		E[0] buffer;
+		E[0] _buf;
+//		@property E[] buffer(){
+//			return cast(E*)(cast(void*)&this + _buf.offsetof)[0 .. chunkSize];
+//		}
 	}
-	struct Slice
+	static struct Slice
 	{
+	private:
+		size_t chunkSize;
 		Chunk* chunk;
-		size_t offset;
-		size_t length;
+		size_t ofs;
+		size_t len;
+	public:
+		@property size_t length() const
+		{
+			return len;
+		}
+		
+		@property bool empty() const
+		{
+			return len == 0;
+		}
+		@property E front()
+		{
+		//	return chunk.buffer[ofs];
+			return *(cast(E*)(cast(ubyte*)chunk + chunk._buf.offsetof) + ofs);
+		}
+		void popFront()
+		in{ assert(!empty); }
+		body
+		{
+//			writefln(" Slice.popFront : len=%s, ofs=%s", len, ofs);
+			--len;
+			++ofs;
+			if (len && ofs == chunkSize)
+			{
+				chunk = chunk.next;
+				ofs = 0;
+			}
+		}
 	}
 	Chunk* head;
 	size_t frontOffset;
-	Chunk termitor;
+	Chunk terminator;
 	size_t fetchedLen;
 
 public:
@@ -1108,6 +1147,11 @@ public:
 	{
 		move(d, device);
 		this.chunkSize = chunkSize;
+		
+		Chunk tmp;
+		head = fetchNext(&tmp);
+//		writefln("_buf.offsetof = %s", head._buf.offsetof);
+//		writefln("head.buf[0] = %s", *(cast(char*)head + head._buf.offsetof));
 	}
 	this(A...)(A args, size_t chunkSize)
 	{
@@ -1120,7 +1164,8 @@ public:
 	}
 	@property E front()
 	{
-		return head.buffer[frontOffset];
+	//	return head.buffer[frontOffset];
+		return *(cast(E*)(cast(ubyte*)head + head._buf.offsetof) + frontOffset);
 	}
 	void popFront()
 	{
@@ -1153,19 +1198,20 @@ public:
 			while (i)
 			{
 				--i;
-				if ((c = fetchedNext(c)) == &terminator)
+				if ((c = fetchNext(c)) == &terminator)
 				//	goto RetSlice;
 					goto EmptySlice;
 			}
 			assert(c != &terminator);
 			if (terminator.lastlen != 0)	// eof
-				if (fetchedLen < bgn)
+				if (fetchedLen <= bgn)
 				//	goto RetSlice;
 					goto EmptySlice;
 		}
 		auto bgnChunk = c;
 		assert(bgnChunk !is &terminator);
-		assert(bgn < fetchedLen);
+		assert(bgn < fetchedLen,
+			format("bgn=%s, fetchedLen=%s", bgn, fetchedLen));
 		
 		if (fetchedLen < end)
 		{
@@ -1215,9 +1261,9 @@ public:
 	FullSlice:
 		auto len = end - bgn;
 		if (len)
-			return Slice(bgnChunk, bgn - bgn_n*chunkSize, len);
+			return Slice(chunkSize, bgnChunk, bgn - bgn_n*chunkSize, len);
 		else
-			return Slice(terminator, 0, 0);
+			return Slice(chunkSize, &terminator, 0, 0);
 	}
 
 private:
@@ -1225,23 +1271,35 @@ private:
 	in{ assert(chunk !is &terminator); }
 	body
 	{
+//		writefln("fetchNext");
 		if (chunk.next)
 			return chunk.next;
 		
 		auto mem = new ubyte[Chunk.sizeof + E.sizeof*chunkSize];
-		auto next = cast(Chunk*)mem;
-		auto buf = next.buffer[0 .. chunkSize];
-		while (device.pull(buf))
+		auto next = cast(Chunk*)mem.ptr;
+	//	auto buf = next.buffer.ptr[0 .. chunkSize];
+		auto buf = (cast(E*)(mem.ptr + next._buf.offsetof))[0 .. chunkSize];
+		auto v = buf;
+//		writefln("mem.ptr=%08s, next=%08s, buf=%08s", mem.ptr, next, buf.ptr);
+		while (device.pull(v))
+		{
+			buf = buf[v.length .. $];
+//			writefln("buf.length = %s", buf.length);
 			if (buf.length == 0)
 				break;
+			v = buf;
+		}
+		
+//		writefln("read = %(%02X %)", cast(ubyte[]) (cast(E*)(mem.ptr + next._buf.offsetof))[0 .. chunkSize]);
+//		writefln("buf.length = %s", buf.length);
 		
 		if (buf.length == chunkSize)
 		{
 			// device.pull == false
 			delete mem;
-			return &termitor;
+			return &terminator;
 		}
-		if (buf.length > 0)
+		else if (buf.length > 0)
 		{
 			auto n = chunkSize - buf.length;
 			fetchedLen += n;
@@ -1251,10 +1309,9 @@ private:
 		else
 		{
 			fetchedLen += chunkSize;
-			chunk.next = next;
 			next.next = null;
 		}
-		return next;
+		return chunk.next = next;
 	}
 	size_t chunkLength(Chunk* chunk)
 	{
@@ -1266,6 +1323,41 @@ private:
 	{
 		return chunk.next == &terminator;
 	}
+}
+
+unittest
+{
+	scope(failure) std.stdio.writefln("unittest@%s:%s failed", __FILE__, __LINE__);
+	
+	auto fname = "deleteme.txt";
+	
+	void makefile()
+	{
+		auto f = File(fname, "w");
+		xtk.format.writef(f, "hello world, welcome to party.");
+	}
+	
+	makefile();
+	scope(exit) std.file.remove(fname);
+	
+	auto f = slicableInput(
+		encoded!char(Sourced!File(fname, "r")), 4);
+	
+	assert(f.front == 'h',
+		xtk.workaround.format("f.front = %s", f.front));
+	
+	assert(equal(f[0..2], "he"));
+	assert(equal(f[0..4], "hell"));
+	assert(equal(f[4..8], "o wo"));
+	assert(equal(f[0..8], "hello wo"));
+	assert(equal(f[6..20], "world, welcome"));
+	popFrontN(f, 6);
+	assert(equal(f[0..5], "world"));
+	popFrontN(f, 7);
+//	writefln("f[0..17] = %s", f[0..17]);
+	assert(equal(f[0..17], "welcome to party."));
+	popFrontN(f, 17);
+	assert(!f.empty);
 }
 
 
