@@ -1076,6 +1076,200 @@ else
 
 
 /**
+*/
+struct SlicableInput(D)
+	if (isSource!D)
+{
+private:
+	alias UnitType!D E;
+	D device;
+	size_t chunkSize;
+	static struct Chunk
+	{
+		union{
+			Chunk* next;
+			size_t lastlen;
+		}
+		E[0] buffer;
+	}
+	struct Slice
+	{
+		Chunk* chunk;
+		size_t offset;
+		size_t length;
+	}
+	Chunk* head;
+	size_t frontOffset;
+	Chunk termitor;
+	size_t fetchedLen;
+
+public:
+	this(Device)(Device d, size_t chunkSize) if (is(Device == D))
+	{
+		move(d, device);
+		this.chunkSize = chunkSize;
+	}
+	this(A...)(A args, size_t chunkSize)
+	{
+		__ctor(D(args), chunkSize);
+	}
+	
+	@property bool empty() const
+	{
+		return head == &terminator;
+	}
+	@property E front()
+	{
+		return head.buffer[frontOffset];
+	}
+	void popFront()
+	{
+		++frontOffset;
+		if (frontOffset == chunkSize)
+		{
+			fetchedLen -= chunkSize;
+			head = fetchNext(head), frontOffset = 0;
+		}
+	}
+	
+	Slice opSlice(size_t b, size_t e)
+	in{ assert(b <= e); }
+	body
+	{
+		auto bgn = frontOffset + b;
+		auto end = frontOffset + e;
+		
+		if (terminator.lastlen != 0)	// eof
+			if (fetchedLen < bgn)
+			//	goto RetSlice;
+				goto EmptySlice;
+		
+		auto bgn_n = bgn / chunkSize;
+		
+		auto c = head;
+	//	if (fetchedLen < bgn)
+		{
+			auto i = bgn_n;
+			while (i)
+			{
+				--i;
+				if ((c = fetchedNext(c)) == &terminator)
+				//	goto RetSlice;
+					goto EmptySlice;
+			}
+			assert(c != &terminator);
+			if (terminator.lastlen != 0)	// eof
+				if (fetchedLen < bgn)
+				//	goto RetSlice;
+					goto EmptySlice;
+		}
+		auto bgnChunk = c;
+		assert(bgnChunk !is &terminator);
+		assert(bgn < fetchedLen);
+		
+		if (fetchedLen < end)
+		{
+			if (terminator.lastlen != 0)
+			//	goto RetSlice;
+				goto HalfSlice;
+			
+			auto i = end / chunkSize - bgn_n;
+			while (i)
+			{
+				--i;
+				if ((c = fetchNext(c)) == &terminator)
+				//	goto RetSlice;
+					goto HalfSlice;
+			}
+			assert(c != &terminator);
+			if (terminator.lastlen != 0)	// eof
+				if (fetchedLen < end)
+				//	goto RetSlice;
+					goto HalfSlice;
+		}
+		assert(end <= fetchedLen);
+	
+	/+
+	RetSlice:
+		if (fetchedLen < bgn)
+			bgn = fetchedLen;
+		if (fetchedLen < end)
+			end = fetchedLen;
+		
+		auto len = end - bgn;
+		if (len)
+			return Slice(bgnChunk, bgn - bgn_n*chunkSize, len);
+		else
+			return Slice(terminator, 0, 0);
+	+/
+		goto FullSlice;
+	
+	EmptySlice:
+		if (fetchedLen < bgn)
+			bgn = fetchedLen;
+	
+	HalfSlice:
+		if (fetchedLen < end)
+			end = fetchedLen;
+	
+	FullSlice:
+		auto len = end - bgn;
+		if (len)
+			return Slice(bgnChunk, bgn - bgn_n*chunkSize, len);
+		else
+			return Slice(terminator, 0, 0);
+	}
+
+private:
+	Chunk* fetchNext(Chunk* chunk)
+	in{ assert(chunk !is &terminator); }
+	body
+	{
+		if (chunk.next)
+			return chunk.next;
+		
+		auto mem = new ubyte[Chunk.sizeof + E.sizeof*chunkSize];
+		auto next = cast(Chunk*)mem;
+		auto buf = next.buffer[0 .. chunkSize];
+		while (device.pull(buf))
+			if (buf.length == 0)
+				break;
+		
+		if (buf.length == chunkSize)
+		{
+			// device.pull == false
+			delete mem;
+			return &termitor;
+		}
+		if (buf.length > 0)
+		{
+			auto n = chunkSize - buf.length;
+			fetchedLen += n;
+			terminator.lastlen = n;
+			next.next = &terminator;
+		}
+		else
+		{
+			fetchedLen += chunkSize;
+			chunk.next = next;
+			next.next = null;
+		}
+		return next;
+	}
+	size_t chunkLength(Chunk* chunk)
+	{
+		return isLastChunk(chunk) ? terminator.lastlen : chunkSize;
+	}
+	bool isLastChunk(Chunk* chunk)
+	in {assert(chunk != &terminator); }
+	body
+	{
+		return chunk.next == &terminator;
+	}
+}
+
+
+/**
 Lined receives pool of char, and makes input range of lines separated $(D delim).
 Naming:
 	LineReader?
