@@ -325,43 +325,40 @@ template Sourced(alias D) if (isTemplate!D)
 }
 
 /// ditto
-template Sourced(D)
+struct Sourced(D)
+	if (isSource!D && isSink!D)
 {
-  static if (isDevice!D)
-  {
-	struct Sourced
+private:
+	alias UnitType!D E;
+	D device;
+
+public:
+	/**
+	*/
+	this(Device)(Device d) if (is(Device == D))
 	{
-	private:
-		alias UnitType!D E;
-		D device;
-	
-	public:
-		/**
-		*/
-		this(Device)(Device d) if (is(Device == D))
-		{
-			move(d, device);
-		}
-		/**
-		Delegate construction to $(D_PARAM D).
-		*/
-		this(A...)(A args)
-		{
-			__ctor(D(args));
-		}
-	
-		/**
-		*/
-		bool pull(ref E[] buf)
-		{
-			return device.pull(buf);
-		}
+		move(d, device);
 	}
-  }
-  else static if (isSource!D)
+	/**
+	Delegate construction to $(D_PARAM D).
+	*/
+	this(A...)(A args)
+	{
+		__ctor(D(args));
+	}
+
+	/**
+	*/
+	bool pull(ref E[] buf)
+	{
+		return device.pull(buf);
+	}
+}
+
+// ditto
+template Sourced(D) if (isSource!D && !isSink!D)
+{
 	alias D Sourced;
-  else
-	static assert(0, "Cannot limit "~D.stringof~" as source");
 }
 
 
@@ -383,43 +380,40 @@ template Sinked(alias D) if (isTemplate!D)
 }
 
 /// ditto
-template Sinked(D)
+struct Sinked(D)
+	if (isSource!D && isSink!D)
 {
-  static if (isDevice!D)
-  {
-	struct Sinked
+private:
+	alias UnitType!D E;
+	D device;
+
+public:
+	/**
+	*/
+	this(Device)(Device d) if (is(Device == D))
 	{
-	private:
-		alias UnitType!D E;
-		D device;
-	
-	public:
-		/**
-		*/
-		this(Device)(Device d) if (is(Device == D))
-		{
-			move(d, device);
-		}
-		/**
-		Delegate construction to $(D_PARAM D).
-		*/
-		this(A...)(A args)
-		{
-			__ctor(D(args));
-		}
-	
-		/**
-		*/
-		bool push(ref const(E)[] buf)
-		{
-			return device.push(buf);
-		}
+		move(d, device);
 	}
-  }
-  else static if (isSink!D)
+	/**
+	Delegate construction to $(D_PARAM D).
+	*/
+	this(A...)(A args)
+	{
+		__ctor(D(args));
+	}
+
+	/**
+	*/
+	bool push(ref const(E)[] buf)
+	{
+		return device.push(buf);
+	}
+}
+
+// ditto
+template Sinked(D) if (!isSource!D && isSink!D)
+{
 	alias D Sinked;
-  else
-	static assert(0, "Cannot limit "~D.stringof~" as sink");
 }
 
 
@@ -850,8 +844,7 @@ unittest
 	std.file.remove(fname);
 }
 
-/*
-*/
+// ditto
 template Ranged(D) if (isDeviced!D)
 {
 	alias D.Original Ranged;
@@ -863,7 +856,8 @@ unittest
 	static assert(is(typeof(a2) == int[]));
 }
 
-/// 
+/*
+*/
 template isRanged(R)
 {
 	static if (is(R _ : Ranged!D, D))
@@ -1039,8 +1033,7 @@ unittest
 	assert(a == [10, 20, 3, 4, 50]);
 }
 
-/*
-*/
+// ditto
 template Deviced(R) if (isRanged!R)
 {
 	alias R.Original Deviced;
@@ -1057,7 +1050,8 @@ unittest
 	static assert(is(typeof(d2) == DummySink));
 }
 
-/// 
+/*
+*/
 template isDeviced(D)
 {
 	static if (is(D _ == Deviced!R, R))
