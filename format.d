@@ -1,9 +1,28 @@
-	module xtk.format;
+module xtk.format;
 
 import xtk.device;
+import std.array : appender;
 import std.format : formattedWrite;
 import std.range;
 import std.traits;
+
+/**
+This may improvement of std.string.format.
+*/
+string format(Char, A...)(in Char[] fmt, A args)
+{
+    auto writer = appender!string();
+    formattedWrite(writer, fmt, args);
+	return writer.data;
+}
+unittest
+{
+	scope(failure) std.stdio.writefln("unittest@%s:%s failed", __FILE__, __LINE__);
+	
+	auto s = format("%(%02X %)", [1,2,3]);
+	assert(s == "01 02 03");
+}
+
 
 AppenderLn!Sink appenderLn(Sink)(Sink sink)
 {

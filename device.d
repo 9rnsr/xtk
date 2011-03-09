@@ -23,6 +23,7 @@ Bufferedの例:
 module xtk.device;
 
 import std.array, std.algorithm, std.range, std.traits;
+import std.exception;
 import std.stdio;
 version(Windows) import xtk.windows;
 
@@ -1076,38 +1077,90 @@ else
 }
 
 
-SlicableInput!D slicableInput(D)(D device, size_t chunkSize)
+ByteMap!(T, Mem) bytemap(T, Mem)(Mem mem)
 {
-	return SlicableInput!D(move(device), chunkSize);
+	return ByteMap!(T, Mem)(mem);
+}
+
+struct ByteMap(T, Mem)
+	if (is(T == struct))
+{
+	Mem mem;
+
+  static if (is(Mem == ubyte[]))
+  {
+	auto opDispatch(string s, A...)(A args)
+	{
+		return mixin("(cast(T*)mem.ptr)." ~ mem);
+	}
+  }
+  else
+  {
+	static assert(is(typeof(mem[0]) == ubyte));
+	
+	auto opDispatch(string s, A...)(A args)
+	{
+		alias typeof(mixin("T.init." ~ s)) R;
+		enum ofs = mixin("T.init." ~ s ~ ".offsetof");
+		enum siz = mixin("T.init." ~ s ~ ".sizeof");
+		
+		static if (is(R == struct))
+		{
+			return bytemap!R(mem[ofs .. ofs+siz]);
+		}
+		else
+		{
+			ubyte[siz] ret;
+			foreach (i; 0 .. siz)
+				ret[i] = mem[ofs + i];
+			return *(cast(typeof(mixin("T.init." ~ s))*)&ret[0]);
+		}
+	}
+  }
+}
+
+
+Slicer!D slicer(D)(D device, size_t chunkSize)
+{
+	return Slicer!D(move(device), chunkSize);
 }
 
 /**
 */
-struct SlicableInput(D)
+struct Slicer(D)
 	if (isSource!D)
 {
 private:
 	alias UnitType!D E;
 	D device;
-	size_t chunkSize;
+	Chunk* head;
+	size_t frontOffset;
+	Chunk terminator;
+	size_t fetchedLen;
+	@property size_t chunkSize() const { return terminator.size; }
+	@property Chunk* lastChunk() { return (head !is null) ? terminator.next : null; }
+	@property const(Chunk*) lastChunk() const { return (head !is null) ? terminator.next : null; }
+	@property void lastChunk(Chunk* chunk) { return terminator.next = chunk; }
+
 	static struct Chunk
 	{
-		union{
-			Chunk* next;
-			size_t lastlen;
-		}
+		Chunk* next;
+		size_t size;
 		E[0] _buf;
-//		@property E[] buffer(){
-//			return cast(E*)(cast(void*)&this + _buf.offsetof)[0 .. chunkSize];
-//		}
+
+		@property E[] buf()
+		{
+			return (cast(E*)(cast(void*)&next + (_buf.offsetof - next.offsetof)))[0 .. size];
+		}
 	}
+
 	static struct Slice
 	{
 	private:
-		size_t chunkSize;
 		Chunk* chunk;
 		size_t ofs;
 		size_t len;
+
 	public:
 		@property size_t length() const
 		{
@@ -1119,34 +1172,68 @@ private:
 			return len == 0;
 		}
 		@property E front()
+		in{ assert(!empty); }
+		body
 		{
-		//	return chunk.buffer[ofs];
-			return *(cast(E*)(cast(ubyte*)chunk + chunk._buf.offsetof) + ofs);
+			return chunk.buf[ofs];
 		}
 		void popFront()
 		in{ assert(!empty); }
 		body
 		{
-//			writefln(" Slice.popFront : len=%s, ofs=%s", len, ofs);
 			--len;
 			++ofs;
-			if (len && ofs == chunkSize)
+			if (len && ofs == chunk.size)
 			{
 				chunk = chunk.next;
 				ofs = 0;
 			}
 		}
+		
+		ref E opIndex(size_t n)
+		{
+			return getChunk(n).buf[(ofs + n) % chunk.size];
+		}
+		
+		Slice opSlice(size_t b, size_t e)
+		{
+			return Slice(getChunk(b), (ofs + b) % chunk.size, e - b);
+		}
+	
+	private:
+		Chunk* getChunk(size_t n)
+		{
+			enforce(n <= len);
+			auto nth = ofs + n;
+			
+		//	if (nth < chunk.size)
+		//	{
+		//		return chunk;
+		//	}
+		//	else
+		//	{
+				auto nth_n = nth / chunk.size;
+				
+				auto c = chunk;
+				auto i = nth_n;
+				while (i)
+				{
+					--i;
+					c = c.next;
+					assert(c !is null);
+				}
+				
+				return c;
+		//	}
+		}
 	}
-	Chunk* head;
-	size_t frontOffset;
-	Chunk terminator;
-	size_t fetchedLen;
+
 
 public:
 	this(Device)(Device d, size_t chunkSize) if (is(Device == D))
 	{
 		move(d, device);
-		this.chunkSize = chunkSize;
+		terminator.size = chunkSize;
 		
 		Chunk tmp;
 		head = fetchNext(&tmp);
@@ -1164,8 +1251,7 @@ public:
 	}
 	@property E front()
 	{
-	//	return head.buffer[frontOffset];
-		return *(cast(E*)(cast(ubyte*)head + head._buf.offsetof) + frontOffset);
+		return head.buf[frontOffset];
 	}
 	void popFront()
 	{
@@ -1177,46 +1263,42 @@ public:
 		}
 	}
 	
+//	ref E opIndex(size_t n)
+//	{
+//	}
+	
 	Slice opSlice(size_t b, size_t e)
-	in{ assert(b <= e); }
-	body
 	{
+		enforce(b <= e);
 		auto bgn = frontOffset + b;
 		auto end = frontOffset + e;
 		
-		if (terminator.lastlen != 0)	// eof
-			if (fetchedLen < bgn)
-			//	goto RetSlice;
-				goto EmptySlice;
+		if (fetchFinished && fetchedLen < bgn)
+			goto EmptySlice;
 		
 		auto bgn_n = bgn / chunkSize;
 		
 		auto c = head;
-	//	if (fetchedLen < bgn)
 		{
 			auto i = bgn_n;
 			while (i)
 			{
 				--i;
 				if ((c = fetchNext(c)) == &terminator)
-				//	goto RetSlice;
 					goto EmptySlice;
 			}
 			assert(c != &terminator);
-			if (terminator.lastlen != 0)	// eof
-				if (fetchedLen <= bgn)
-				//	goto RetSlice;
-					goto EmptySlice;
+			if (fetchedLen <= bgn)
+				goto EmptySlice;
 		}
 		auto bgnChunk = c;
 		assert(bgnChunk !is &terminator);
 		assert(bgn < fetchedLen,
-			format("bgn=%s, fetchedLen=%s", bgn, fetchedLen));
+			xtk.format.format("bgn=%s, fetchedLen=%s", bgn, fetchedLen));
 		
 		if (fetchedLen < end)
 		{
-			if (terminator.lastlen != 0)
-			//	goto RetSlice;
+			if (fetchFinished)
 				goto HalfSlice;
 			
 			auto i = end / chunkSize - bgn_n;
@@ -1224,74 +1306,47 @@ public:
 			{
 				--i;
 				if ((c = fetchNext(c)) == &terminator)
-				//	goto RetSlice;
 					goto HalfSlice;
 			}
 			assert(c != &terminator);
-			if (terminator.lastlen != 0)	// eof
-				if (fetchedLen < end)
-				//	goto RetSlice;
-					goto HalfSlice;
+			if (fetchedLen < end)
+				goto HalfSlice;
 		}
 		assert(end <= fetchedLen);
+		goto FullSlice;
 	
-	/+
-	RetSlice:
-		if (fetchedLen < bgn)
-			bgn = fetchedLen;
-		if (fetchedLen < end)
-			end = fetchedLen;
-		
+	EmptySlice:
+		bgn = fetchedLen;
+	HalfSlice:
+		end = fetchedLen;
+	FullSlice:
 		auto len = end - bgn;
 		if (len)
 			return Slice(bgnChunk, bgn - bgn_n*chunkSize, len);
 		else
-			return Slice(terminator, 0, 0);
-	+/
-		goto FullSlice;
-	
-	EmptySlice:
-		if (fetchedLen < bgn)
-			bgn = fetchedLen;
-	
-	HalfSlice:
-		if (fetchedLen < end)
-			end = fetchedLen;
-	
-	FullSlice:
-		auto len = end - bgn;
-		if (len)
-			return Slice(chunkSize, bgnChunk, bgn - bgn_n*chunkSize, len);
-		else
-			return Slice(chunkSize, &terminator, 0, 0);
+			return Slice(null, 0, 0);
 	}
 
 private:
-	Chunk* fetchNext(Chunk* chunk)
-	in{ assert(chunk !is &terminator); }
+	Chunk* fetchNext(Chunk* prev)
+	in{ assert(prev !is &terminator); }
 	body
 	{
 //		writefln("fetchNext");
-		if (chunk.next)
-			return chunk.next;
+		if (prev.next)
+			return prev.next;
 		
 		auto mem = new ubyte[Chunk.sizeof + E.sizeof*chunkSize];
-		auto next = cast(Chunk*)mem.ptr;
-	//	auto buf = next.buffer.ptr[0 .. chunkSize];
-		auto buf = (cast(E*)(mem.ptr + next._buf.offsetof))[0 .. chunkSize];
+		auto chunk = cast(Chunk*)mem.ptr;
+		auto buf = chunk.buf.ptr[0 .. chunkSize];
 		auto v = buf;
-//		writefln("mem.ptr=%08s, next=%08s, buf=%08s", mem.ptr, next, buf.ptr);
 		while (device.pull(v))
 		{
 			buf = buf[v.length .. $];
-//			writefln("buf.length = %s", buf.length);
 			if (buf.length == 0)
 				break;
 			v = buf;
 		}
-		
-//		writefln("read = %(%02X %)", cast(ubyte[]) (cast(E*)(mem.ptr + next._buf.offsetof))[0 .. chunkSize]);
-//		writefln("buf.length = %s", buf.length);
 		
 		if (buf.length == chunkSize)
 		{
@@ -1299,34 +1354,32 @@ private:
 			delete mem;
 			return &terminator;
 		}
-		else if (buf.length > 0)
-		{
-			auto n = chunkSize - buf.length;
-			fetchedLen += n;
-			terminator.lastlen = n;
-			next.next = &terminator;
-		}
 		else
 		{
-			fetchedLen += chunkSize;
-			next.next = null;
+			// device.pull == true
+			lastChunk = chunk;
+			
+			auto n = chunkSize - buf.length;
+			fetchedLen += n;
+			chunk.size = n;
+			chunk.next = null;
 		}
-		return chunk.next = next;
+		return prev.next = chunk;
 	}
-	size_t chunkLength(Chunk* chunk)
+	
+	bool fetchFinished() const
 	{
-		return isLastChunk(chunk) ? terminator.lastlen : chunkSize;
-	}
-	bool isLastChunk(Chunk* chunk)
-	in {assert(chunk != &terminator); }
-	body
-	{
-		return chunk.next == &terminator;
+	//	if (auto last = lastChunk)
+		auto last = lastChunk;
+		if (last)
+			return last.size < terminator.size;
+		else
+			return false;
 	}
 }
-
 unittest
 {
+	scope(success) std.stdio.writefln("unittest@%s:%s passed", __FILE__, __LINE__);
 	scope(failure) std.stdio.writefln("unittest@%s:%s failed", __FILE__, __LINE__);
 	
 	auto fname = "deleteme.txt";
@@ -1340,17 +1393,19 @@ unittest
 	makefile();
 	scope(exit) std.file.remove(fname);
 	
-	auto f = slicableInput(
+	auto f = slicer(
 		encoded!char(Sourced!File(fname, "r")), 4);
 	
 	assert(f.front == 'h',
-		xtk.workaround.format("f.front = %s", f.front));
+		xtk.format.format("f.front = \\x%02X", f.front));
 	
 	assert(equal(f[0..2], "he"));
+	
 	assert(equal(f[0..4], "hell"));
 	assert(equal(f[4..8], "o wo"));
 	assert(equal(f[0..8], "hello wo"));
 	assert(equal(f[6..20], "world, welcome"));
+	
 	popFrontN(f, 6);
 	assert(equal(f[0..5], "world"));
 	popFrontN(f, 7);

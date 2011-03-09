@@ -1,23 +1,9 @@
 module xtk.workaround;
 
 
-/**
-This may improvement of std.string.format.
-*/
-import std.array : appender;
-import std.format : formattedWrite;
-string format(Char, A...)(in Char[] fmt, A args)
+deprecated string format(Char, A...)(in Char[] fmt, A args)
 {
-    auto writer = appender!string();
-    formattedWrite(writer, fmt, args);
-	return writer.data;
-}
-unittest
-{
-	scope(failure) std.stdio.writefln("unittest@%s:%s failed", __FILE__, __LINE__);
-	
-	auto s = format("%(%02X %)", [1,2,3]);
-	assert(s == "01 02 03");
+	return "";
 }
 
 
