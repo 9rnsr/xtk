@@ -23,6 +23,23 @@ struct Pack(T...)
 	alias T field;
 //	alias Identity!(T.length) length;
 	enum size_t length = field.length;
+	
+	struct Tag;
+}
+
+template isPack(T...)
+{
+	static if (is(T[0] _ == Pack!V, V...))
+		enum isPack = true;
+	else
+		enum isPack = false;
+}
+version(unittest)
+{
+	static assert( isPack!(Pack!(1,2, int)));
+	static assert(!isPack!(1,2, int));
+	static assert(!isPack!(1));
+	static assert(!isPack!(int));
 }
 
 // workaround @@@BUG4333@@@
@@ -165,10 +182,8 @@ template staticReduce(alias F, alias Init, T...)
 		alias staticReduceEnv!(Init, F, T).Res staticReduce;
 	}
 }
-unittest
+version(unittest)
 {
-	scope(failure) std.stdio.writefln("unittest@%s:%s failed", __FILE__, __LINE__);
-	
 	static assert(staticReduce!(q{A==""?B:A~", "~B}, "", Seq!("AAA", "BBB", "CCC")) == "AAA, BBB, CCC");
 }
 
@@ -296,10 +311,10 @@ template Equal(alias A, B)
 {
 	enum Equal = false;
 }
-//template Equal(alias A, alias B)
-//{
-//	enum Equal = (is(Pack!A.Tag == Pack!B.Tag));
-//}
+template Equal(alias A, alias B)
+{
+	enum Equal = is(Pack!A.Tag == Pack!B.Tag);
+}
 
 template Equal(A)
 {
@@ -341,7 +356,7 @@ template Not(alias F)// if (isTemplate!F)
 		enum Not = !(F!A);
 	}
 }
-unittest
+version(unittest)
 {
 	alias Seq!(1,2,3) a;
 	alias Filter!(Not!(Equal!(1)), Seq!(1,2,3)) b;

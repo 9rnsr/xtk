@@ -27,6 +27,8 @@ import std.exception;
 import std.stdio;
 version(Windows) import xtk.windows;
 
+import xtk.format : format;
+
 import xtk.workaround;
 
 debug = Workarounds;
