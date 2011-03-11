@@ -11,6 +11,13 @@ template Identity(T)
 	alias T Identity;
 }
 
+
+template Seq(T...)
+{
+	alias T Seq;
+}
+
+
 struct Pack(T...)
 {
 	alias T field;
@@ -50,6 +57,24 @@ template mixinAll(mixins...)
 	}
 }
 
+template staticMap(alias F, T...)
+{
+    static if (T.length == 0)
+    {
+        alias Seq!() staticMap;
+    }
+    else static if (T.length == 1)
+    {
+        alias Seq!(F!(T[0])) staticMap;
+    }
+    else
+    {
+        alias Seq!(
+        	staticMap!(F, T[0   .. $/2]),
+            staticMap!(F, T[$/2 .. $  ])) staticMap;
+    }
+}
+
 /**
  */
 template staticIota(int beg, int end, int step = 1)
@@ -58,13 +83,13 @@ template staticIota(int beg, int end, int step = 1)
 	static if (beg + 1 >= end)
 	{
 		static if (beg >= end)
-			alias TypeTuple!() staticIota;
+			alias Seq!() staticIota;
 		else
-			alias TypeTuple!(+beg) staticIota;
+			alias Seq!(+beg) staticIota;
 	}
 	else
 	{
-		alias TypeTuple!(
+		alias Seq!(
 			staticIota!(beg, beg+(end-beg)/2),
 		    staticIota!(     beg+(end-beg)/2, end))
 			staticIota;
@@ -81,9 +106,9 @@ template staticZip(alias P, alias Q)
 {
 	static assert(P.length == Q.length);
 	static if (P.length == 0)
-		alias TypeTuple!() staticZip;
+		alias Seq!() staticZip;
 	else
-		alias TypeTuple!(
+		alias Seq!(
 				Pack!(P.field[0], Q.field[0]),
 				staticZip!(Pack!(P.field[1..$]), Pack!(Q.field[1..$]))
 			  ) staticZip;
@@ -92,9 +117,9 @@ template staticZip(alias P, alias Q, alias R)
 {
 	static assert(P.length == Q.length && Q.length == R.length);
 	static if (P.length == 0)
-		alias TypeTuple!() staticZip;
+		alias Seq!() staticZip;
 	else
-		alias TypeTuple!(
+		alias Seq!(
 				Pack!(P.field[0], Q.field[0], R.field[0]),
 				staticZip!(Pack!(P.field[1..$]), Pack!(Q.field[1..$]), Pack!(R.field[1..$]))
 			  ) staticZip;
@@ -117,7 +142,6 @@ private template staticReduceEnv(alias Init, alias F, T...)
 	}
 	template Engine(alias Tmp, T...)
 	{
-		//pragma(msg, "Engine: (", Tmp.Res, "), ", T);
 		static if (T.length == 0)
 		{
 			alias Tmp.Res Engine;
@@ -145,7 +169,7 @@ unittest
 {
 	scope(failure) std.stdio.writefln("unittest@%s:%s failed", __FILE__, __LINE__);
 	
-	static assert(staticReduce!(q{A==""?B:A~", "~B}, "", TypeTuple!("AAA", "BBB", "CCC")) == "AAA, BBB, CCC");
+	static assert(staticReduce!(q{A==""?B:A~", "~B}, "", Seq!("AAA", "BBB", "CCC")) == "AAA, BBB, CCC");
 }
 
 template allSatisfy(alias F, T...)
@@ -197,3 +221,130 @@ template isTemplate(alias T)
 }
 
 
+template Typeof(alias A)
+{
+	alias typeof(A) Typeof;
+}
+
+template isType(T...) if (T.length == 1)
+{
+	enum isType = is(T[0]);
+}
+
+template isStruct(T...) if (T.length == 1)
+{
+	enum isStruct = is(T[0] == struct);
+}
+
+template RemoveIf(alias F, T...)
+{
+	static if (T.length == 0)
+	{
+		alias Seq!() RemoveIf;
+	}
+	else static if (T.length == 1)
+	{
+		static if (F!(T[0]))
+			alias Seq!() RemoveIf;
+		else
+			alias Seq!(T[0]) RemoveIf;
+	}
+	else
+	{
+		alias Seq!(
+				RemoveIf!(F, T[0 .. $/2]),
+				RemoveIf!(F, T[$/2 .. $])) RemoveIf;
+	}
+}
+
+template Filter(alias F, T...)
+{
+	static if (T.length == 0)
+	{
+		alias Seq!() Filter;
+	}
+	else static if (T.length == 1)
+	{
+		static if (F!(T[0]))
+			alias Seq!(T[0]) Filter;
+		else
+			alias Seq!() Filter;
+	}
+	else
+	{
+		alias Seq!(
+				Filter!(F, T[0 .. $/2]),
+				Filter!(F, T[$/2 .. $])) Filter;
+	}
+}
+
+/+template allTypes(T)
+{
+	Filter!(isType, __traits(allMembers, T)
+}
++/
+
+template Equal(A, B)
+{
+	enum Equal = is(A == B);
+}
+template Equal(A, alias B)
+{
+	enum Equal = false;
+}
+template Equal(alias A, B)
+{
+	enum Equal = false;
+}
+//template Equal(alias A, alias B)
+//{
+//	enum Equal = (is(Pack!A.Tag == Pack!B.Tag));
+//}
+
+template Equal(A)
+{
+	alias Equal_!(A) Equal;
+}
+template Equal(alias A)
+{
+	alias Equal_!(A).Equal Equal;
+}
+
+template Equal_(A)
+{
+	template Equal(B)      { enum Equal = .Equal!(A, B); }
+	template Equal(alias B){ enum Equal = .Equal!(A, B); }
+}
+template Equal_(alias A)
+{
+	template Equal(B)      { enum Equal = .Equal!(A, B); }
+	template Equal(alias B){ enum Equal = .Equal!(A, B); }
+}
+
+
+/+
+template Test(T...)
+{
+}
+static assert(isTemplate!Test);
+
+static if (is(Test _ == T!U, alias T, U...))
+{
+	static assert(0);
+}
++/
+
+template Not(alias F)// if (isTemplate!F)
+{
+	template Not(A...)
+	{
+		enum Not = !(F!A);
+	}
+}
+unittest
+{
+	alias Seq!(1,2,3) a;
+	alias Filter!(Not!(Equal!(1)), Seq!(1,2,3)) b;
+	
+	static assert(Equal!(Pack!b, Pack!(2,3)));
+}
