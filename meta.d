@@ -18,7 +18,7 @@ template Seq(T...)
 }
 
 
-struct Pack(T...)
+template Pack(T...)
 {
 	alias T field;
 //	alias Identity!(T.length) length;
@@ -29,10 +29,7 @@ struct Pack(T...)
 
 template isPack(T...)
 {
-	static if (is(T[0] _ == Pack!V, V...))
-		enum isPack = true;
-	else
-		enum isPack = false;
+	enum isPack = is(Identity!(T[0]).Tag == Pack!(T[0].field).Tag);
 }
 version(unittest)
 {
@@ -195,14 +192,14 @@ template allSatisfy(alias F, T...)
     }
     else static if (T.length == 1)
     {
-		static if (is(T[0] U == Pack!V, V...))
+		static if (isPack!(T[0]))
 			alias F!(T[0].field) allSatisfy;
 		else
         	alias F!(T[0]) allSatisfy;
     }
     else
     {
-		static if (is(T[0] U == Pack!V, V...))
+		static if (isPack!(T[0]))
         	enum bool allSatisfy = F!(T[0].field) && allSatisfy!(F, T[1 .. $]);
         else
         	enum bool allSatisfy = F!(T[0]) && allSatisfy!(F, T[1 .. $]);

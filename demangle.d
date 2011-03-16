@@ -27,14 +27,16 @@ private import std.exception;
 
 private import std.ctype;
 private import std.string;
-private import std.traits;
+//private import std.traits;
 
 version(unittest)
 {
 	private import std.conv;
 	private import std.stdio;
-	private import std.typetuple;
+//	private import std.typetuple;
 }
+
+private import xtk.meta;
 
 /+private class MangleException : Exception
 {
@@ -237,9 +239,9 @@ version(unittest)
 	enum E{A}
 	static const aggregates =
 	[
-		[ C	.mangleof,	"class std.demangle.C"		],
-		[ S	.mangleof,	"struct std.demangle.S"		],
-		[ E	.mangleof,	"enum std.demangle.E"		]
+		[ C	.mangleof,	"class xtk.demangle.C"		],
+		[ S	.mangleof,	"struct xtk.demangle.S"		],
+		[ E	.mangleof,	"enum xtk.demangle.E"		]
 	];
 
 	template staticCheck(alias table, alias dem)
@@ -321,9 +323,9 @@ version(unittest)
 unittest
 {
 	static assert(demangleOf!int == "int");
-	static assert(demangleOf!global == "int std.demangle.global");
-	static assert(demangleOf!f == "void std.demangle.f()");
-	static assert(demangleOf!(Template!int) == "std.demangle.Template!(int)");
+	static assert(demangleOf!global == "int xtk.demangle.global");
+	static assert(demangleOf!f == "void xtk.demangle.f()");
+	static assert(demangleOf!(Template!int) == "xtk.demangle.Template!(int)");
 }
 
 // implementation of CTFE demangle
