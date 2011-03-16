@@ -1379,6 +1379,7 @@ private:
 			return false;
 	}
 }
+debug(xtk_unittest)	// 他Projectとの併用時にSlicerの実体化で失敗する場合があるので、ここだけ外せるようにする
 unittest
 {
 	scope(success) std.stdio.writefln("unittest@%s:%s passed", __FILE__, __LINE__);
