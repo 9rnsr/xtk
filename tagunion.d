@@ -3,6 +3,13 @@ module xtk.tagunion;
 public import xtk.match;
 version(unittest) import std.stdio;
 
+
+private struct TagOf(T)
+{
+	int value;
+	alias value this;
+}
+
 template TagUnion(Defines...)
 {
 private:
@@ -11,6 +18,8 @@ private:
 
 	alias typeof(this) Self;
 	
+	alias TagOf!Self Tag;
+
 	template ExtractTags(E...)
 	{
 	  static if (E.length == 0)
@@ -57,7 +66,7 @@ private:
 	}
 
   // tycon tags
-	template GenerateTag()
+/+	template GenerateTag()
 	{
 		mixin(mixin(expand!q{
 			enum Tag
@@ -66,7 +75,7 @@ private:
 				${ Join!(", ", TyconTagList[1 .. $]) }
 			}
 		}));
-	}
+	}+/
 
   // tycon types
 	template GenerateDataType(size_t n)
@@ -98,7 +107,7 @@ private:
 //						static assert (isCovariantParameterWith!(Pack!(Elem), Pack!(TyconSig!n)), "no match");
 						auto payload = new Self();
 						
-						alias TypeTuple!(Tag.${ TyconTag!n }, elem) values;
+						alias TypeTuple!(Tag($n), elem) values;
 						
 						foreach (i, _field; values)
 						{
@@ -136,7 +145,7 @@ private:
 					static auto opIndex(string file=__FILE__, int line=__LINE__, Elem...)(Elem elem)
 					{
 						//pragma(msg, "GenerateDataType.opIndex : file/line=", file, "/", line);
-						return p[Tag.${ TyconTag!n }, elem];
+						return p[Tag($n), elem];
 					}
 				}
 			}));
@@ -164,39 +173,27 @@ private:
 	}
 
   // opMatch
-	template GenerateOpMatch()
-	{
+//	template GenerateOpMatch()
+//	{
 		template GenMatchCase(size_t n)
 		{
 			enum GenMatchCase = mixin(expand!q{
-				case Tag.${ TyconTag!n }:
+				case $n:
 					return m <<= tuple(data$n.tupleof);
 			});
 		}
 		
-		bool opMatch(Match)(ref Match m)
-		{
-			mixin(mixin(expand!q{
-				final switch (tag)
-				{
-				${ Join!("\n",
-						staticMap!(
-							GenMatchCase,
-							staticIota!(staticLength!(TyconTagList)))) }
-				}
-			}));
-		}
-	}
+//	}
 
   // toString
-	template GenerateToString()
-	{
+//	template GenerateToString()
+//	{
 		import std.array, std.format, std.conv;
 		
 		template GenToString(size_t n)
 		{
 			enum GenToString = mixin(expand!q{
-				case Tag.${ TyconTag!n }:
+				case $n:
 					foreach (i, Unused; data$n.tupleof[1..$])
 					{
 						static if (i > 0)
@@ -212,31 +209,10 @@ private:
 			});
 		}
 		
-		string toString()
-		{
-			enum header = typeof(this).stringof ~ ".";
-			enum separator = ", ";
-			
-			Appender!string app;
-			app.put(header);
-			app.put(to!string(tag));
-			app.put("(");
-			mixin(mixin(expand!q{
-				final switch (tag)
-				{
-				${ Join!("\n",
-						staticMap!(
-							GenToString,
-							staticIota!(staticLength!(TyconTagList)))) }
-				}
-			}));
-			app.put(")");
-			return app.data;
-		}
-	}
+//	}
 
 private:
-	mixin GenerateTag!();
+//	mixin GenerateTag!();
 	mixin mixinAll!(
 		staticMap!(
 			GenerateDataType,
@@ -271,8 +247,41 @@ public:
   // export type constructors
 	alias GenerateTycons!Self tycons;
 
-	mixin GenerateOpMatch!();
-	mixin GenerateToString!();
+//	mixin GenerateOpMatch!();
+		bool opMatch(Match)(ref Match m)
+		{
+			mixin(mixin(expand!q{
+				final switch (tag.value)
+				{
+				${ Join!("\n",
+						staticMap!(
+							GenMatchCase,
+							staticIota!(staticLength!(TyconTagList)))) }
+				}
+			}));
+		}
+//	mixin GenerateToString!();
+		string toString()
+		{
+			enum header = typeof(this).stringof ~ ".";
+			enum separator = ", ";
+			
+			Appender!string app;
+			app.put(header);
+			app.put(to!string(tag));
+			app.put("(");
+			mixin(mixin(expand!q{
+				final switch (tag.value)
+				{
+				${ Join!("\n",
+						staticMap!(
+							GenToString,
+							staticIota!(staticLength!(TyconTagList)))) }
+				}
+			}));
+			app.put(")");
+			return app.data;
+		}
 }
 
 version(unittest)
