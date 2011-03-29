@@ -194,6 +194,66 @@ private:
 		}
 	}
 
+  // opEquals
+	template GenerateOpEquals()
+	{
+		template GenOpEquals(size_t n)
+		{
+			enum GenOpEquals = mixin(expand!q{
+				case Tag.${ TyconTag!n }:
+					foreach (i, _; data$n.tupleof)
+					{
+						if (data$n.tupleof[i] != e.data$n.tupleof[i])
+							return false;
+					}
+					break;
+			});
+		}
+		
+	  static if (is(Self == class))
+	  {
+		override bool opEquals(Object o)
+		{
+			auto e = cast(Self)o;
+			if (!o)
+				return false;
+			
+			if (tag != e.tag)
+				return false;
+			
+			mixin(mixin(expand!q{
+				final switch (tag)
+				{
+				${ Join!("\n",
+						staticMap!(
+							GenOpEquals,
+							staticIota!(staticLength!(TyconTagList)))) }
+				}
+			}));
+			return true;
+		}
+	  }
+	  else
+	  {
+		bool opEquals(ref const(Self) o) const
+		{
+			if (tag != e.tag)
+				return false;
+			
+			mixin(mixin(expand!q{
+				final switch (tag)
+				{
+				${ Join!("\n",
+						staticMap!(
+							GenOpEquals,
+							staticIota!(staticLength!(TyconTagList)))) }
+				}
+			}));
+			return true;
+		}
+	  }
+	}
+
   // toString
 	template GenerateToString()
 	{
@@ -282,6 +342,7 @@ public:
 	alias GenerateTycons!Self tycons;
 
 	mixin GenerateOpMatch!();
+	mixin GenerateOpEquals!();
 	mixin GenerateToString!();
 }
 
